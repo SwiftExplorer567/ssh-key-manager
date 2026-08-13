@@ -27,17 +27,33 @@ assert_true "purge preserves the SSH directory boundary" test ! -e "$purge_home/
 
 if [[ "${SKM_RELEASE_TEST_CHILD:-0}" != "1" ]]; then
     release_repo="$TEST_ROOT/release-repo"
+    release_current=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' "$ROOT/src/runtime.sh" | head -1)
+    IFS=. read -r release_major release_minor release_patch <<< "$release_current"
+    release_test_version="$release_major.$release_minor.$((release_patch + 1))"
+    rollback_test_version="$release_major.$release_minor.$((release_patch + 2))"
     cp -R "$ROOT" "$release_repo"
     git -C "$release_repo" config user.name "SKM Tests"
     git -C "$release_repo" config user.email "skm-tests@example.invalid"
     git -C "$release_repo" add -A
     git -C "$release_repo" commit -m "test: release fixture" >/dev/null
-    SKM_RELEASE_TEST_CHILD=1 bash "$release_repo/release.sh" 1.0.1 >/dev/null
-    assert_eq "1.0.1" "$(HOME="$TEST_ROOT/release-home" SKM_TESTING=0 "$release_repo/ssh-key-manager" version)" "release rebuilds the bundled executable"
-    assert_true "release updates installer version" grep -q '^VERSION="1.0.1"$' "$release_repo/install.sh"
-    assert_true "release updates source version" grep -q '^VERSION="1.0.1"$' "$release_repo/src/runtime.sh"
-    assert_true "release creates the annotated tag" bash -c "git -C '$release_repo' rev-parse -q --verify refs/tags/v1.0.1 >/dev/null"
+    SKM_RELEASE_TEST_CHILD=1 bash "$release_repo/release.sh" "$release_test_version" >/dev/null
+    assert_eq "$release_test_version" "$(HOME="$TEST_ROOT/release-home" SKM_TESTING=0 "$release_repo/ssh-key-manager" version)" "release rebuilds the bundled executable"
+    assert_true "release updates installer version" grep -q "^VERSION=\"$release_test_version\"$" "$release_repo/install.sh"
+    assert_true "release updates source version" grep -q "^VERSION=\"$release_test_version\"$" "$release_repo/src/runtime.sh"
+    release_tag_exists() { git -C "$release_repo" rev-parse -q --verify "refs/tags/v$release_test_version" >/dev/null; }
+    assert_true "release creates the annotated tag" release_tag_exists
     assert_eq "" "$(git -C "$release_repo" status --short)" "release leaves a clean worktree"
+
+    failing_bin="$TEST_ROOT/release-failing-bin"
+    mkdir -p "$failing_bin"
+    printf '%s\n' '#!/bin/sh' 'exit 1' > "$failing_bin/make"
+    chmod 755 "$failing_bin/make"
+    failed_release_rolls_back() {
+        PATH="$failing_bin:$PATH" bash "$release_repo/release.sh" "$rollback_test_version" >/dev/null 2>&1
+    }
+    assert_false "failed release returns a failure status" failed_release_rolls_back
+    assert_eq "$release_test_version" "$(HOME="$TEST_ROOT/release-home" SKM_TESTING=0 "$release_repo/ssh-key-manager" version)" "failed release restores the previous version"
+    assert_eq "" "$(git -C "$release_repo" status --short)" "failed release restores a clean worktree"
 fi
 
 finish_tests

@@ -22,6 +22,25 @@ current=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' src/runtime.sh | head -1)
 [[ "$new_version" != "$current" ]] || { echo "Version is already $current." >&2; exit 1; }
 git rev-parse "v$new_version" >/dev/null 2>&1 && { echo "Tag v$new_version already exists." >&2; exit 1; }
 
+backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/skm-release.XXXXXX")
+cp src/runtime.sh install.sh ssh-key-manager ssh-key-manager.sha256 "$backup_dir/"
+rollback_release() {
+    local status="${1:-1}"
+    trap - ERR HUP INT TERM
+    git restore --staged -- src/runtime.sh install.sh ssh-key-manager ssh-key-manager.sha256 >/dev/null 2>&1 || true
+    cp "$backup_dir/runtime.sh" src/runtime.sh
+    cp "$backup_dir/install.sh" install.sh
+    cp "$backup_dir/ssh-key-manager" ssh-key-manager
+    cp "$backup_dir/ssh-key-manager.sha256" ssh-key-manager.sha256
+    rm -rf "$backup_dir"
+    echo "Release failed; version files were restored." >&2
+    exit "$status"
+}
+trap 'rollback_release $?' ERR
+trap 'rollback_release 129' HUP
+trap 'rollback_release 130' INT
+trap 'rollback_release 143' TERM
+
 perl -pi -e "s/^VERSION=\"\Q$current\E\"/VERSION=\"$new_version\"/" src/runtime.sh install.sh
 make build
 make test
@@ -31,6 +50,8 @@ make check-generated
 git add src/runtime.sh ssh-key-manager ssh-key-manager.sha256 install.sh
 git commit -m "chore(release): v$new_version"
 git tag -a "v$new_version" -m "SSH Key Manager v$new_version"
+trap - ERR HUP INT TERM
+rm -rf "$backup_dir"
 
 echo "Created release commit and tag v$new_version."
 echo "Review, then publish explicitly:"
