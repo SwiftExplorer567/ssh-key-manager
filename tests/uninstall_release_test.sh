@@ -21,7 +21,8 @@ purge_home="$TEST_ROOT/purge-home"
 purge_config="$purge_home/.config/ssh-key-manager"
 mkdir -p "$purge_config"
 printf 'fixture\n' > "$purge_config/servers.conf"
-HOME="$purge_home" bash "$ROOT/uninstall.sh" --yes --purge --prefix "$TEST_ROOT/purge-bin" >/dev/null
+HOME="$purge_home" XDG_CONFIG_HOME="$purge_home/.config" \
+    bash "$ROOT/uninstall.sh" --yes --purge --prefix "$TEST_ROOT/purge-bin" >/dev/null
 assert_false "purge removes SKM configuration" test -e "$purge_config"
 assert_true "purge preserves the SSH directory boundary" test ! -e "$purge_home/.ssh"
 
