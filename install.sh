@@ -6,7 +6,7 @@ set -o nounset
 set -o pipefail
 umask 077
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 SYSTEM_INSTALL=0
 PREFIX=""
