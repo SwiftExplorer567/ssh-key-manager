@@ -11,11 +11,12 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install ShellCheck (Linux)
         if: runner.os == 'Linux'
@@ -23,7 +24,9 @@ jobs:
 
       - name: Install ShellCheck (macOS)
         if: runner.os == 'macOS'
-        run: brew install shellcheck
+        run: |
+          brew untap aws/tap >/dev/null 2>&1 || true
+          brew install shellcheck
 
       - name: Verify generated executable
         run: make check-generated
