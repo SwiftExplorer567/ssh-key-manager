@@ -139,6 +139,10 @@ HOST_ADDRS=("local" "192.168.31.179")
 HOST_PORTS=("22" "22")
 # shellcheck disable=SC2034
 HOST_STATUSES=("local" "ready")
+local_access_map=$(access_status_one "Mac Mini")
+assert_true "access map labels the local host as this machine" grep -Fq '● this machine' <<< "$local_access_map"
+assert_false "access map does not show SSH directions for the local host" grep -Fq -- '->' <<< "$local_access_map"
+assert_false "access map does not report local self-access as not granted" grep -Fq 'not granted' <<< "$local_access_map"
 SKM_FORCE_TUI=1 select_host "Test which machine?" false <<< "2" >/dev/null
 assert_eq "rpi5" "$SELECTED_HOST" "TUI host selection returns only the selected name"
 assert_eq "1" "$SELECTED_HOST_INDEX" "TUI host selection preserves the selected index"

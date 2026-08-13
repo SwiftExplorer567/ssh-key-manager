@@ -603,7 +603,11 @@ access_status_one() {
     local name="$1" index local_key local_blob remote_auth remote_key remote_blob local_auth=""
     require_host "$name" || return 1; index=$RESOLVED_HOST_INDEX
     printf '\n%s%s%s\n' "$C_BOLD" "${HOST_NAMES[$index]} (${HOST_USERS[$index]}@${HOST_ADDRS[$index]})" "$C_RESET"
-    if ! is_local_host "$index" && ! ssh_run_batch "$index" true >/dev/null 2>&1; then
+    if is_local_host "$index"; then
+        printf '  %s● this machine%s (no SSH connection needed)\n' "$C_GREEN" "$C_RESET"
+        return 0
+    fi
+    if ! ssh_run_batch "$index" true >/dev/null 2>&1; then
         printf '  this machine -> %-18s %sunknown%s (no key-based connection)\n' "${HOST_NAMES[$index]}" "$C_YELLOW" "$C_RESET"
         printf '  %-18s -> this machine  %sunknown%s\n' "${HOST_NAMES[$index]}" "$C_YELLOW" "$C_RESET"
         return 1
