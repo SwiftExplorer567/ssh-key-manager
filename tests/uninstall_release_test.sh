@@ -35,6 +35,7 @@ if [[ "${SKM_RELEASE_TEST_CHILD:-0}" != "1" ]]; then
     cp -R "$ROOT" "$release_repo"
     git -C "$release_repo" config user.name "SKM Tests"
     git -C "$release_repo" config user.email "skm-tests@example.invalid"
+    git -C "$release_repo" tag -d "v$release_current" >/dev/null 2>&1 || true
     git -C "$release_repo" checkout -B main >/dev/null 2>&1
     git -C "$release_repo" add -A
     git -C "$release_repo" commit --allow-empty -m "test: release fixture" >/dev/null

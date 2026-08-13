@@ -47,6 +47,11 @@ second_private="$SKM_SSH_DIR/id_test_second"
 # shellcheck disable=SC2016
 ssh-keygen -q -t ed25519 -N '' -C 'comment with spaces; $(touch should-not-run)' -f "$second_private"
 second_key=$(read_public_key_file "$second_private.pub")
+menu_item=$(authorized_key_menu_item "$second_key")
+assert_true "revoke menu identifies a key by its comment" grep -Fq 'comment with spaces' <<< "$menu_item"
+assert_true "revoke menu shows the key fingerprint" grep -Fq "$(key_fingerprint "$second_key")" <<< "$menu_item"
+restricted_key="restrict $second_key"
+assert_eq "$(key_fingerprint "$second_key")" "$(key_fingerprint "$restricted_key")" "restricted authorized keys remain visible in the revoke menu"
 assert_eq "added" "$(authorized_add_local "$second_key")" "second local grant is added"
 authorized_remove_local "$(key_blob "$second_key")"
 assert_false "selected public key can be revoked" grep -q "$(key_blob "$second_key")" "$SKM_AUTHORIZED_KEYS"

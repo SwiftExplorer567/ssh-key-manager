@@ -140,7 +140,8 @@ host_status_text() {
 }
 
 select_host() {
-    local title="${1:-Choose a machine}" remote_only="${2:-false}" i status
+    local title="${1:-Choose a machine}" remote_only="${2:-false}"
+    local subtitle="${3:-Choose by name; no key files are shown here.}" i status
     local options=() indices=()
     SELECTED_HOST=""; SELECTED_HOST_INDEX=-1
     for i in "${!HOST_NAMES[@]}"; do
@@ -158,7 +159,7 @@ select_host() {
         fi
         ui_pause; return 1
     fi
-    run_menu "$title" "Choose by name; no key files are shown here." "${options[@]}"
+    run_menu "$title" "$subtitle" "${options[@]}"
     (( MENU_RESULT >= 0 )) || return 1
     SELECTED_HOST_INDEX=${indices[$MENU_RESULT]}
     SELECTED_HOST="${HOST_NAMES[$SELECTED_HOST_INDEX]}"
@@ -311,6 +312,55 @@ interactive_hosts() {
     done
 }
 
+interactive_revoke_access() {
+    local name index lines line menu_item selected fingerprint algorithm comment
+    local key_lines=() options=()
+    select_host "Choose Machine to Protect" false "Choose where you want to review and remove an access grant." || return
+    name="$SELECTED_HOST"; index=$SELECTED_HOST_INDEX
+
+    ui_header "Reading Access"
+    lines=$(remote_authorized_keys "$index") || {
+        ui_notice danger "Could not read $name" "SKM needs working management access to list its authorized public keys."
+        ui_pause; return
+    }
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        menu_item=$(authorized_key_menu_item "$line" 2>/dev/null) || continue
+        key_lines+=("$line"); options+=("$menu_item")
+    done <<< "$lines"
+
+    if (( ${#key_lines[@]} == 0 )); then
+        ui_header "Revoke Access"
+        ui_notice success "No authorized public keys" "No supported keys currently grant access to $name."
+        ui_pause; return
+    fi
+
+    options+=("Cancel|Keep every key unchanged")
+    run_menu "Keys Allowed on $name" "${#key_lines[@]} public key(s) can sign in. Choose the one to remove." "${options[@]}"
+    (( MENU_RESULT >= 0 && MENU_RESULT < ${#key_lines[@]} )) || return
+    selected="${key_lines[$MENU_RESULT]}"
+    fingerprint=$(key_fingerprint "$selected"); algorithm=$(key_algorithm "$selected"); comment=$(key_comment "$selected")
+    [[ -n "$comment" ]] || comment="Unnamed key"
+
+    ui_header "Review Revocation"
+    ui_step "FINAL" "Confirm exactly what will change"
+    ui_notice danger "$comment  →  $name" "This public key will no longer be allowed to sign in to $name."
+    printf '\n  %sAlgorithm%s    %s\n  %sFingerprint%s  %s\n  %sDestination%s  %s@%s:%s\n' \
+        "$C_MUTED" "$C_RESET" "$algorithm" "$C_MUTED" "$C_RESET" "$fingerprint" \
+        "$C_MUTED" "$C_RESET" "${HOST_USERS[$index]}" "${HOST_ADDRS[$index]}" "${HOST_PORTS[$index]}"
+    if confirm "Revoke this key from $name?" n; then
+        printf '\n'
+        if access_revoke_key "$name" "$selected"; then
+            ui_notice success "Access revoked" "$comment can no longer sign in to $name."
+        else
+            ui_notice danger "Revocation failed" "No access entry was changed."
+        fi
+    else
+        ui_notice warning "Cancelled" "No access entry was changed."
+    fi
+    ui_pause
+}
+
 interactive_security() {
     local options public_path
     while true; do
@@ -330,7 +380,7 @@ interactive_security() {
                 ui_notice success "Safe to share" "Paste this public key into another key manager; keep the private file on this device."
                 printf '\n  '; read_public_key_file "$public_path" || true; printf '\n'; ui_pause
                 ;;
-            2) select_host "Revoke Access On" false && access_revoke_remote "$SELECTED_HOST"; ui_pause;;
+            2) interactive_revoke_access;;
             3) ui_header "Security Check"; doctor || true; ui_pause;;
             *) return;;
         esac

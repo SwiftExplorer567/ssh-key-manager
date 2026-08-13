@@ -10,7 +10,12 @@ key_blob() {
 key_comment() {
     awk '{ for (i=1; i<=NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/ && i < NF) { if (i+1 < NF) { for (j=i+2; j<=NF; j++) printf "%s%s", (j==i+2?"":" "), $j }; exit } }' <<< "$1"
 }
-key_fingerprint() { printf '%s\n' "$1" | ssh-keygen -lf /dev/stdin 2>/dev/null | awk '{print $2}'; }
+key_fingerprint() {
+    local algorithm blob
+    algorithm=$(key_algorithm "$1"); blob=$(key_blob "$1")
+    [[ -n "$algorithm" && -n "$blob" ]] || return 1
+    printf '%s %s\n' "$algorithm" "$blob" | ssh-keygen -lf /dev/stdin 2>/dev/null | awk '{print $2}'
+}
 
 valid_public_key() {
     local line="$1" type
@@ -286,6 +291,15 @@ print_inventory_lines() {
     (( n > 0 )) || say "    none"
 }
 
+authorized_key_menu_item() {
+    local line="$1" fingerprint algorithm comment
+    fingerprint=$(key_fingerprint "$line") || return 1
+    algorithm=$(key_algorithm "$line"); comment=$(key_comment "$line")
+    [[ -n "$comment" ]] || comment="Unnamed key"
+    (( ${#comment} > 42 )) && comment="${comment:0:41}…"
+    printf '%s|%s · %s' "$comment" "$algorithm" "$fingerprint"
+}
+
 choose_authorized_line() {
     local lines="$1" choice line n=0
     print_authorized_lines "$lines"
@@ -300,14 +314,21 @@ choose_authorized_line() {
 }
 
 access_revoke_remote() {
-    local name="$1" index lines selected blob
+    local name="$1" index lines selected
     require_host "$name" || return 1; index=$RESOLVED_HOST_INDEX
     lines=$(remote_authorized_keys "$index") || { fail "Cannot read authorized keys on $name."; return 1; }
     [[ -n "$lines" ]] || { fail "No authorized keys found on $name."; return 1; }
     say "These keys can sign in to $name:"
     selected=$(choose_authorized_line "$lines") || { fail "Invalid selection."; return 1; }
-    blob=$(key_blob "$selected")
     confirm "Revoke $(key_fingerprint "$selected") from $name?" || { say "Cancelled."; return 0; }
+    access_revoke_key "$name" "$selected"
+}
+
+access_revoke_key() {
+    local name="$1" selected="$2" index blob fingerprint
+    require_host "$name" || return 1; index=$RESOLVED_HOST_INDEX
+    blob=$(key_blob "$selected"); fingerprint=$(key_fingerprint "$selected")
+    [[ -n "$blob" && -n "$fingerprint" ]] || { fail "Invalid authorized key selection."; return 1; }
     remote_remove_authorized "$index" "$blob" || { fail "Could not revoke access."; return 1; }
     ok "Access revoked on $name. Backup: ~/.ssh/authorized_keys.skm.bak"
 }
