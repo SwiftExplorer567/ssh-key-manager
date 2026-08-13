@@ -37,7 +37,7 @@ if [[ "${SKM_RELEASE_TEST_CHILD:-0}" != "1" ]]; then
     git -C "$release_repo" config user.email "skm-tests@example.invalid"
     git -C "$release_repo" checkout -B main >/dev/null 2>&1
     git -C "$release_repo" add -A
-    git -C "$release_repo" commit -m "test: release fixture" >/dev/null
+    git -C "$release_repo" commit --allow-empty -m "test: release fixture" >/dev/null
     SKM_RELEASE_TEST_CHILD=1 bash "$release_repo/release.sh" "$release_test_version" >/dev/null
     assert_eq "$release_test_version" "$(HOME="$TEST_ROOT/release-home" SKM_TESTING=0 "$release_repo/ssh-key-manager" version)" "release rebuilds the bundled executable"
     assert_true "release updates installer version" grep -q "^VERSION=\"$release_test_version\"$" "$release_repo/install.sh"
