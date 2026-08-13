@@ -17,16 +17,18 @@ new_version="${1:-}"
 [[ -z "$(git status --short)" ]] || { echo "Working tree must be clean." >&2; exit 1; }
 [[ "$(git branch --show-current)" == "main" ]] || { echo "Release from main." >&2; exit 1; }
 
-current=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' ssh-key-manager | head -1)
+current=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' src/runtime.sh | head -1)
 [[ -n "$current" ]] || { echo "Cannot read current version." >&2; exit 1; }
 [[ "$new_version" != "$current" ]] || { echo "Version is already $current." >&2; exit 1; }
 git rev-parse "v$new_version" >/dev/null 2>&1 && { echo "Tag v$new_version already exists." >&2; exit 1; }
 
-perl -pi -e "s/^VERSION=\"\Q$current\E\"/VERSION=\"$new_version\"/" ssh-key-manager install.sh
+perl -pi -e "s/^VERSION=\"\Q$current\E\"/VERSION=\"$new_version\"/" src/runtime.sh install.sh
+make build
 make test
 make lint
+make check-generated
 
-git add ssh-key-manager install.sh
+git add src/runtime.sh ssh-key-manager ssh-key-manager.sha256 install.sh
 git commit -m "chore(release): v$new_version"
 git tag -a "v$new_version" -m "SSH Key Manager v$new_version"
 

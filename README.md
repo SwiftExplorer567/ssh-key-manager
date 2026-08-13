@@ -32,7 +32,8 @@ curl -fsSL https://raw.githubusercontent.com/SwiftExplorer567/ssh-key-manager/ma
 ```
 
 The installer uses `/usr/local/bin` when it is writable, otherwise
-`~/.local/bin`. It validates the downloaded script with `bash -n` before
+`~/.local/bin`. Remote installs download the versioned release asset and its
+SHA-256 file, verify the checksum, and validate the script with `bash -n` before
 installation. To explicitly request a system install:
 
 ```bash
@@ -106,10 +107,11 @@ skm update check
 skm update install
 ```
 
-Installation downloads the versioned release-tag script over HTTPS, confirms
-its embedded version and shebang, runs `bash -n`, preserves the current binary
-as `.previous`, and then replaces it atomically. System installs request `sudo`
-only after explicit update confirmation.
+Installation downloads the versioned release executable and checksum over
+HTTPS, verifies SHA-256, confirms the embedded version and shebang, runs
+`bash -n`, preserves the current binary as `.previous`, and then replaces it
+atomically. System installs request `sudo` only after explicit update
+confirmation.
 
 ## Commands
 
@@ -182,16 +184,37 @@ host keys but trusts a first-seen key. For pre-provisioned `known_hosts`, set:
 STRICT_HOST_KEY_CHECKING="yes"
 ```
 
-## Development
+## Architecture and development
+
+Development sources are separated by responsibility:
+
+- `src/runtime.sh` — environment, configuration, output, and validation;
+- `src/hosts.sh` — host persistence and host operations;
+- `src/ssh_transport.sh` — SSH invocation and remote transport;
+- `src/access.sh` — keys, grants, revocation, and security checks;
+- `src/updates.sh` — release discovery, checksum validation, and updates;
+- `src/ui.sh` — terminal UI and interactive flows;
+- `src/cli.sh` — help, command dispatch, and application entry point;
+- `remote/` — remote `authorized_keys` programs embedded at build time.
+
+`build/bundle.sh` combines these sources into the single distributable
+`ssh-key-manager` executable and its `ssh-key-manager.sha256` checksum. Both
+generated files are committed so direct install URLs remain available; CI
+rejects stale generated output.
 
 ```bash
+make build
+make check-generated
 make test
 make lint
+make ci
 ```
 
-Tests run with isolated temporary HOME/config/SSH directories and never touch
-the developer's real SSH files. CI runs syntax checks, the functional suite,
-and ShellCheck on every push and pull request.
+Tests are split by runtime/hosts, access, updates/install, UI/CLI, and
+uninstall/release behavior. They run with isolated temporary HOME/config/SSH
+directories and never touch the developer's real SSH files. CI runs generated
+artifact checks, the functional suite, syntax validation, and ShellCheck on
+Linux and macOS.
 
 ## Uninstall
 
@@ -202,6 +225,12 @@ curl -fsSL https://raw.githubusercontent.com/SwiftExplorer567/ssh-key-manager/ma
 ```
 
 Add `--purge` to remove SKM's host configuration. `~/.ssh` is never removed.
+For an installation made with `install.sh --prefix DIR`, pass the same location
+to the uninstaller:
+
+```bash
+./uninstall.sh --yes --prefix DIR
+```
 
 ## License
 

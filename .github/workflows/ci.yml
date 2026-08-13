@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -12,7 +15,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install ShellCheck (Linux)
         if: runner.os == 'Linux'
@@ -22,8 +25,8 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install shellcheck
 
-      - name: Test
-        run: make test
+      - name: Verify generated executable
+        run: make check-generated
 
-      - name: Lint
-        run: make lint
+      - name: Test and lint
+        run: make test && make lint
