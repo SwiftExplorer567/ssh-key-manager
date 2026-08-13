@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Prepare a verified release commit and annotated tag. Pushing is explicit.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$ROOT"
+
+new_version="${1:-}"
+[[ "$new_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "Usage: ./release.sh X.Y.Z" >&2
+    exit 2
+}
+
+[[ -z "$(git status --short)" ]] || { echo "Working tree must be clean." >&2; exit 1; }
+[[ "$(git branch --show-current)" == "main" ]] || { echo "Release from main." >&2; exit 1; }
+
+current=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' ssh-key-manager | head -1)
+[[ -n "$current" ]] || { echo "Cannot read current version." >&2; exit 1; }
+[[ "$new_version" != "$current" ]] || { echo "Version is already $current." >&2; exit 1; }
+git rev-parse "v$new_version" >/dev/null 2>&1 && { echo "Tag v$new_version already exists." >&2; exit 1; }
+
+perl -pi -e "s/^VERSION=\"\Q$current\E\"/VERSION=\"$new_version\"/" ssh-key-manager install.sh
+make test
+make lint
+
+git add ssh-key-manager install.sh
+git commit -m "chore(release): v$new_version"
+git tag -a "v$new_version" -m "SSH Key Manager v$new_version"
+
+echo "Created release commit and tag v$new_version."
+echo "Review, then publish explicitly:"
+echo "  git push origin main v$new_version"
