@@ -30,9 +30,13 @@ SKM_FORCE_TUI=1 select_host "Remote only" true <<< "1" >/dev/null
 assert_eq "rpi5" "$SELECTED_HOST" "remote actions exclude the local machine"
 SKM_FORCE_TUI=1 run_menu "Arrow test" "" "One|First" "Two|Second" "Three|Third" <<< $'\e[B\e[B\n' >/dev/null
 assert_eq "2" "$MENU_RESULT" "arrow-key navigation selects the highlighted item"
+menu_output=$(render_menu "Dashboard" "Simple key management" 0 "Give Access|Authorize a client" "Machines|Manage inventory")
+assert_true "polished menu shows numbered primary action" grep -Fq 'Give Access' <<< "$menu_output"
+assert_true "polished menu keeps beginner description visible" grep -Fq 'Authorize a client' <<< "$menu_output"
 
 assert_eq "$VERSION" "$(HOME="$HOME" SKM_TESTING=0 NO_COLOR=1 bash "$ROOT/ssh-key-manager" version)" "version command works"
-assert_true "help explains the access direction" bash -c "HOME='$HOME' SKM_TESTING=0 NO_COLOR=1 bash '$ROOT/ssh-key-manager' help | grep -q 'This machine -> SERVER'"
+assert_true "help presents SKM as key management" bash -c "HOME='$HOME' SKM_TESTING=0 NO_COLOR=1 bash '$ROOT/ssh-key-manager' help | grep -q 'does not open interactive SSH sessions'"
+assert_true "quick connect command is removed" bash -c "HOME='$HOME' SKM_TESTING=0 NO_COLOR=1 bash '$ROOT/ssh-key-manager' connect rpi5 2>&1 | grep -q \"Unknown command 'connect'\""
 assert_true "ambiguous legacy wording is rejected" bash -c "HOME='$HOME' SKM_TESTING=0 NO_COLOR=1 bash '$ROOT/ssh-key-manager' give-access 2>&1 | grep -q 'ambiguous'"
 
 finish_tests

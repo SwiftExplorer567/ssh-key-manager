@@ -4,7 +4,7 @@
 set -o pipefail
 umask 077
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 APP_NAME="SSH Key Manager"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 

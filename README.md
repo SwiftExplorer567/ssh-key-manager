@@ -1,7 +1,8 @@
 # SSH Key Manager v1
 
-SSH access management for humans. SKM makes the direction of every access grant
-explicit and never transfers a private key.
+Public key management for humans. SKM keeps a clear inventory across your
+machines and lets you grant or revoke access without ever moving a private key.
+It deliberately does not open interactive SSH sessions.
 
 ## The mental model
 
@@ -12,16 +13,16 @@ this machine  ── public key ──>  server authorized_keys
 this machine  ── signs in ────>  server
 ```
 
-| What you want | Command | What changes |
+| What you want | Where to do it | What changes |
 |---|---|---|
-| Connect from here to `storage` | `skm access grant storage` | This machine's public key is allowed on `storage` |
-| Let `storage` connect back here | `skm access receive storage` | `storage`'s public key is allowed on this machine |
-| Connect both ways | `skm access link storage` | The two public keys are allowed in opposite directions |
-| Open an SSH session | `skm connect storage` | No access files change |
+| Let this device access `rpi5` | Dashboard → Give Access → This device | This device's public key is allowed on `rpi5` |
+| Let a new client access one server | Dashboard → Give Access → Another device | The pasted client public key is added to one destination |
+| Let a new client access every managed server | Dashboard → Give Access → Another device → All | The same client public key is added to each destination |
+| Review keys across the fleet | Keys & Security → Key inventory | Nothing; only public metadata is read |
 
 Each machine owns a dedicated `~/.ssh/id_ed25519_skm` keypair. The private half
-stays on that machine. Two-way access means two separate private keys and two
-public access grants—not a copied private key.
+stays on that machine. Access is always granted by copying only a public key to
+a destination's `authorized_keys` file.
 
 ## Install
 
@@ -40,42 +41,38 @@ installation. To explicitly request a system install:
 curl -fsSL https://raw.githubusercontent.com/SwiftExplorer567/ssh-key-manager/main/install.sh | bash -s -- --system
 ```
 
-## Two-server quick start
+## Mac mini + Raspberry Pi quick start
 
-On server A:
+Install SKM on the Mac mini, open `skm`, then choose **Machines → Add a
+machine**. Enter a friendly name such as `rpi5`, its SSH user, IP address, and
+port. When asked, let SKM give the Mac mini access to the Pi. The Pi's login
+password may be requested once so its `authorized_keys` can be updated.
+
+The equivalent CLI commands are:
 
 ```bash
-skm host add server-b admin 192.168.1.20 22
-skm access link server-b
+skm host add rpi5 homelab 192.168.1.20 22
+skm access grant rpi5
 ```
 
-The first step of `link` can ask for server B's SSH password once. SKM then:
+SKM creates a dedicated ED25519 key on the Mac mini if needed and adds only its
+public half to the Pi. The private half stays on the Mac mini.
 
-1. creates a dedicated ED25519 key on A if needed;
-2. adds A's public key to B;
-3. creates a separate dedicated ED25519 key on B if needed;
-4. adds B's public key to A;
-5. leaves both private keys on their original machines.
+## Give a new client access
 
-Afterward:
+On the client device, run:
 
 ```bash
-skm connect server-b
-skm access status server-b
-```
-
-If password login is disabled and there is no existing SSH path, use an offline
-public-key exchange:
-
-```bash
-# On server A
 skm key public
-
-# On server B: paste the line printed by A
-skm access allow -
 ```
 
-Repeat in the other direction if you need two-way access.
+If the client has no SKM key, this creates one on that client and prints only
+the safe-to-share public line. On the Mac mini, choose **Give Access → Another
+device**, paste that line, and choose one destination or all saved machines.
+SKM does not copy or escrow the client's private key.
+
+If password login is disabled and the manager cannot yet reach a server, install
+the public key through the server's console or provisioning system first.
 
 ## Interactive use
 
@@ -83,17 +80,17 @@ Run `skm` with no arguments to open the full-screen dashboard. Use arrow keys or
 `j`/`k` to move, Enter to select, number shortcuts for direct selection, and
 `q` to go back. The dashboard uses user goals, not SSH file jargon:
 
-1. Quick connect
-2. Set up passwordless access
-3. See access directions
-4. Machines
-5. Keys & security
-6. Updates
+1. Give Access
+2. Machines
+3. Keys & Security
+4. Access Overview
+5. Updates
 
 Saved machines show `ready`, `unavailable`, or `this machine` status badges.
-Quick Connect and Access Setup list only remote machines, preventing accidental
-self-selection. The confirmation screen always displays an explicit direction
-such as `THIS MACHINE → storage` before changing access.
+The Key Inventory shows public identities and authorized public keys for the
+local device and every reachable saved machine. Unreachable machines are marked
+without blocking the rest of the inventory. The confirmation screen always
+displays the exact source and destination before changing access.
 
 ## Updates
 
@@ -127,9 +124,6 @@ skm access link NAME [KEY.pub]
 skm access status [NAME]
 skm access revoke NAME
 skm access allow [KEY.pub|-]
-
-skm connect NAME [SSH_ARGS...]
-skm quick NAME [SSH_ARGS...]
 
 skm key list
 skm key generate [PATH] [COMMENT]
@@ -167,6 +161,7 @@ allow-listed; the config file is never sourced as shell code.
 ## Security properties
 
 - private keys are never read for transfer and never leave their owner;
+- inventory reads only `*.pub` and `authorized_keys` public data;
 - only validated public key lines are accepted;
 - host, user, port, and machine names are validated before SSH use;
 - `authorized_keys` updates are locked, atomic, permissioned, and backed up;

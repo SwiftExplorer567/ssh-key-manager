@@ -1,6 +1,9 @@
 # shellcheck shell=bash
 
 key_type() { awk '{print $1}' <<< "$1"; }
+key_algorithm() {
+    awk '{ for (i=1; i<=NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { print $i; exit } }' <<< "$1"
+}
 key_blob() {
     awk '{ for (i=1; i<=NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/ && i < NF) { print $(i+1); exit } }' <<< "$1"
 }
@@ -105,6 +108,27 @@ remote_authorized_keys() {
     ssh_run_batch "$index" 'test ! -L "$HOME/.ssh/authorized_keys" || exit 20; cat "$HOME/.ssh/authorized_keys" 2>/dev/null || true'
 }
 
+remote_public_keys() {
+    local index="$1" file line
+    if [[ "$index" == "local" ]] || is_local_host "$index"; then
+        shopt -s nullglob
+        for file in "$SSH_DIR"/*.pub; do
+            [[ -f "$file" && ! -L "$file" ]] || continue
+            line=$(read_public_key_file "$file" 2>/dev/null || true)
+            [[ -n "$line" ]] && printf '%s\n' "$line"
+        done
+        shopt -u nullglob
+        return 0
+    fi
+    # Read only public key files. Private key paths and contents never leave the machine.
+    # shellcheck disable=SC2016
+    ssh_run_batch "$index" 'for file in "$HOME"/.ssh/*.pub; do
+  [ -f "$file" ] && [ ! -L "$file" ] || continue
+  IFS= read -r line < "$file" || true
+  [ -n "$line" ] && printf "%s\n" "$line"
+done'
+}
+
 remote_managed_public_key() {
     local index="$1" path
     if is_local_host "$index"; then
@@ -136,13 +160,12 @@ remote_read_managed_public_key() {
     ssh_run_batch "$index" 'key="$HOME/.ssh/id_ed25519_skm.pub"; [ -f "$key" ] && [ ! -L "$key" ] && cat "$key" || true'
 }
 
-access_grant() {
-    local name="$1" pub_path="${2:-}" index key result
+access_grant_public_key() {
+    local name="$1" key="$2" index result
+    valid_public_key "$key" || { fail "Invalid or unsupported public key."; return 1; }
     require_host "$name" || return 1; index=$RESOLVED_HOST_INDEX
-    if [[ -z "$pub_path" ]]; then pub_path=$(ensure_managed_key) || return 1; fi
-    key=$(read_public_key_file "$pub_path") || return 1
-    info "Direction: this machine -> ${HOST_NAMES[$index]}"
-    info "Only the public key will be added. A password prompt may appear once."
+    info "Authorizing the selected public key on ${HOST_NAMES[$index]}."
+    info "Only the public key is added; a server password may be requested once."
     result=$(remote_add_authorized "$index" "$key") || {
         fail "Could not authorize the key on ${HOST_NAMES[$index]}."
         say "Public key for manual installation:"
@@ -150,10 +173,17 @@ access_grant() {
         return 1
     }
     if [[ "$result" == *exists* ]]; then
-        ok "Access already existed: this machine can sign in to ${HOST_NAMES[$index]}."
+        ok "Access already existed: this device is authorized on ${HOST_NAMES[$index]}."
     else
-        ok "Access granted: this machine can now sign in to ${HOST_NAMES[$index]}."
+        ok "Access granted: the device can now sign in to ${HOST_NAMES[$index]}."
     fi
+}
+
+access_grant() {
+    local name="$1" pub_path="${2:-}" key
+    if [[ -z "$pub_path" ]]; then pub_path=$(ensure_managed_key) || return 1; fi
+    key=$(read_public_key_file "$pub_path") || return 1
+    access_grant_public_key "$name" "$key"
 }
 
 access_receive() {
@@ -242,6 +272,20 @@ print_authorized_lines() {
     done <<< "$lines"
 }
 
+print_inventory_lines() {
+    local lines="$1" n=0 line fp comment algorithm
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        fp=$(key_fingerprint "$line"); [[ -n "$fp" ]] || continue
+        algorithm=$(key_algorithm "$line"); comment=$(key_comment "$line")
+        [[ -n "$comment" ]] || comment="unnamed key"
+        (( ${#comment} > 28 )) && comment="${comment:0:27}…"
+        n=$((n + 1))
+        printf '    %-12s %-48s %s\n' "$algorithm" "$fp" "$comment"
+    done <<< "$lines"
+    (( n > 0 )) || say "    none"
+}
+
 choose_authorized_line() {
     local lines="$1" choice line n=0
     print_authorized_lines "$lines"
@@ -269,34 +313,60 @@ access_revoke_remote() {
 }
 
 access_allow_local() {
-    local source="${1:--}" line result
+    local source="${1:--}" line
     if [[ "$source" == "-" ]]; then
         [[ -t 0 ]] && printf 'Paste one public key, then press Enter:\n' >&2
         IFS= read -r line || { fail "No public key received."; return 1; }
     else
         line=$(read_public_key_file "$source") || return 1
     fi
+    access_allow_public_key "$line"
+}
+
+access_allow_public_key() {
+    local line="$1" result
     valid_public_key "$line" || { fail "Invalid or unsupported public key."; return 1; }
     result=$(authorized_add_local "$line") || { fail "Could not update local authorized_keys."; return 1; }
-    if [[ "$result" == "exists" ]]; then ok "That machine already had access."; else ok "Access allowed to this machine."; fi
+    if [[ "$result" == "exists" ]]; then ok "That device already had access to this machine."; else ok "Access granted to this machine."; fi
 }
 
 
+key_inventory_machine() {
+    local label="$1" index="${2:-}" owned="" allowed="" allowed_unavailable=0
+    printf '\n%s◆ %s%s\n' "$C_BOLD" "$label" "$C_RESET"
+    if [[ -z "$index" ]]; then
+        owned=$(remote_public_keys local 2>/dev/null || true)
+        [[ -f "$AUTHORIZED_KEYS" && ! -L "$AUTHORIZED_KEYS" ]] && allowed=$(cat "$AUTHORIZED_KEYS")
+    else
+        owned=$(remote_public_keys "$index" 2>/dev/null) || {
+            printf '  %sunavailable%s  Public keys could not be read with current access.\n' "$C_YELLOW" "$C_RESET"
+            return 1
+        }
+        allowed=$(remote_authorized_keys "$index" 2>/dev/null) || { allowed=""; allowed_unavailable=1; }
+    fi
+    say "  Public identities on this machine"
+    print_inventory_lines "$owned"
+    say "  Keys allowed to access this machine"
+    if (( allowed_unavailable == 1 )); then
+        printf '    %sunavailable%s\n' "$C_YELLOW" "$C_RESET"
+    else
+        print_inventory_lines "$allowed"
+    fi
+}
+
 key_list() {
-    local found=0 file line fp comment
-    say "Keys owned by this machine (private files are never displayed):"
-    shopt -s nullglob
-    for file in "$SSH_DIR"/*.pub; do
-        [[ -f "$file" ]] || continue
-        line=$(read_public_key_file "$file" 2>/dev/null || true); [[ -n "$line" ]] || continue
-        found=1; fp=$(key_fingerprint "$line"); comment=$(key_comment "$line")
-        printf '  %-28s %-48s %s\n' "$(basename "$file")" "$fp" "$comment"
+    local i local_label="This machine" local_seen=0 rc=0
+    for i in "${!HOST_NAMES[@]}"; do
+        if is_local_host "$i"; then local_label="${HOST_NAMES[$i]} · this machine"; local_seen=1; break; fi
     done
-    shopt -u nullglob
-    (( found == 1 )) || say "  none"
-    say ""
-    say "Keys allowed to sign in to this machine:"
-    if [[ -f "$AUTHORIZED_KEYS" ]]; then print_authorized_lines "$(cat "$AUTHORIZED_KEYS")"; else say "  none"; fi
+    say "Public key inventory — private keys are never read or displayed."
+    key_inventory_machine "$local_label" || rc=1
+    for i in "${!HOST_NAMES[@]}"; do
+        is_local_host "$i" && continue
+        key_inventory_machine "${HOST_NAMES[$i]} · ${HOST_USERS[$i]}@${HOST_ADDRS[$i]}" "$i" || rc=1
+    done
+    (( local_seen == 1 || ${#HOST_NAMES[@]} > 0 )) || say "\nAdd a machine to include its public key inventory."
+    return "$rc"
 }
 
 key_generate() {
@@ -328,7 +398,7 @@ doctor() {
         mode=$(file_mode "$AUTHORIZED_KEYS" 2>/dev/null || true)
         if [[ "$mode" == "600" ]]; then ok "authorized_keys permissions: 600"; else warn "authorized_keys permissions should be 600 (found ${mode:-unknown})."; issues=$((issues+1)); fi
         while IFS= read -r line; do
-            type=$(key_type "$line")
+            type=$(key_algorithm "$line")
             if [[ "$type" == "ssh-rsa" || "$type" == "ssh-dss" ]]; then warn "Legacy authorized key type: $type ($(key_fingerprint "$line"))"; issues=$((issues+1)); fi
         done < "$AUTHORIZED_KEYS"
     fi

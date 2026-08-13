@@ -2,18 +2,23 @@
 
 usage() {
     cat <<'EOF'
-SSH Key Manager — directional, passwordless SSH access
+SSH Key Manager — public key inventory and access control
 
-The rule is simple:
-  skm access grant SERVER     This machine -> SERVER
-  skm access receive SERVER   SERVER -> this machine
-  skm access link SERVER      Both directions
+Manage the public keys and access grants on your machines. This is a key
+management tool; it does not open interactive SSH sessions.
 
 Private keys never move. Each machine owns a dedicated ED25519 key; only public
 keys are added to authorized_keys.
 
+Start here:
+  skm                              Open the beginner-friendly dashboard
+
+Common tasks:
+  1. Add your servers from Machines.
+  2. Use Give Access for this device or paste a new client's public key.
+  3. Review every reachable machine under Keys & Security > Key inventory.
+
 Commands:
-  skm                              Open the full-screen interactive dashboard
   skm host list
   skm host add NAME USER HOST [PORT]
   skm host remove NAME
@@ -24,9 +29,7 @@ Commands:
   skm access status [NAME]
   skm access revoke NAME           Revoke a key that can enter NAME
   skm access allow [KEY.pub|-]     Allow a public key into this machine
-  skm connect NAME [SSH_ARGS...]   Quick access
-  skm quick NAME [SSH_ARGS...]     Alias for connect
-  skm key list
+  skm key list                     Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
   skm doctor
@@ -34,12 +37,13 @@ Commands:
   skm update install
   skm version
 
-First-time two-server setup:
+Example — give this device access to a server:
   skm host add storage admin 192.168.1.20
-  skm access link storage
+  skm access grant storage
 
-The first command may ask for the remote SSH password once. Afterwards use:
-  skm connect storage
+New client with no key:
+  Run `skm key public` on the client, then paste the result into the dashboard's
+  Give Access > Another device flow. The private key stays on the client.
 EOF
 }
 
@@ -70,10 +74,6 @@ dispatch() {
                 allow) access_allow_local "${2:--}";;
                 *) die "Usage: skm access {grant|receive|link|status|revoke|allow}";;
             esac
-            ;;
-        connect|quick)
-            [[ -n "${2:-}" ]] || die "Usage: skm $command NAME [SSH_ARGS...]"
-            shift; local name="$1"; shift; connect_host "$name" "$@"
             ;;
         key)
             shift

@@ -96,9 +96,9 @@ host_remove() {
 host_test() {
     local index; require_host "$1" || return 1; index=$RESOLVED_HOST_INDEX
     if is_local_host "$index" || ssh_run_batch "$index" true >/dev/null 2>&1; then
-        ok "Passwordless access to ${HOST_NAMES[$index]} is ready."
+        ok "${HOST_NAMES[$index]} is reachable for key management."
     else
-        fail "No passwordless access to ${HOST_NAMES[$index]}. Run: skm access grant ${HOST_NAMES[$index]}"
+        fail "${HOST_NAMES[$index]} is not reachable with the current management key. Run: skm access grant ${HOST_NAMES[$index]}"
         return 1
     fi
 }
