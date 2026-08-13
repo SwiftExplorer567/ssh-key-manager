@@ -18,7 +18,7 @@ export SKM_MANAGED_KEY="$SKM_SSH_DIR/id_ed25519_skm"
 export SKM_TESTING=1
 export NO_COLOR=1
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC1091
 source "$ROOT/ssh-key-manager"
 
 passes=0

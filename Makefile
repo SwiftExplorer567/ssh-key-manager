@@ -1,6 +1,7 @@
 .PHONY: build check-generated test lint ci
 
 MODULE_SOURCES := $(wildcard src/*.sh) $(wildcard remote/*.sh)
+BUILD_SOURCES := build/bundle.sh build/lint.sh
 TEST_SOURCES := tests/test.sh tests/helpers/test_helper.sh $(wildcard tests/*_test.sh)
 
 build:
@@ -13,7 +14,7 @@ test: build
 	./tests/test.sh
 
 lint: build
-	bash -n ssh-key-manager install.sh uninstall.sh release.sh build/bundle.sh $(MODULE_SOURCES) $(TEST_SOURCES)
-	@if command -v shellcheck >/dev/null 2>&1; then shellcheck ssh-key-manager install.sh uninstall.sh release.sh build/bundle.sh remote/*.sh $(TEST_SOURCES); else echo "shellcheck not installed; syntax checks completed"; fi
+	bash -n ssh-key-manager install.sh uninstall.sh release.sh $(BUILD_SOURCES) $(MODULE_SOURCES) $(TEST_SOURCES)
+	@if command -v shellcheck >/dev/null 2>&1; then ./build/lint.sh; else echo "shellcheck not installed; syntax checks completed"; fi
 
 ci: check-generated test lint

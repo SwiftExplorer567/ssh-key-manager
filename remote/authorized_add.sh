@@ -25,7 +25,7 @@ else
   echo added
 fi
 chmod 600 "$tmp"
-[ -f "$auth" ] && cp -p "$auth" "$auth.skm.bak" 2>/dev/null || true
+if [ -f "$auth" ]; then cp -p "$auth" "$auth.skm.bak" 2>/dev/null || true; fi
 mv -f "$tmp" "$auth"
 rmdir "$lock"
 trap - EXIT HUP INT TERM
