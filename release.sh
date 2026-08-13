@@ -19,7 +19,6 @@ new_version="${1:-}"
 
 current=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' src/runtime.sh | head -1)
 [[ -n "$current" ]] || { echo "Cannot read current version." >&2; exit 1; }
-[[ "$new_version" != "$current" ]] || { echo "Version is already $current." >&2; exit 1; }
 git rev-parse "v$new_version" >/dev/null 2>&1 && { echo "Tag v$new_version already exists." >&2; exit 1; }
 
 backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/skm-release.XXXXXX")
@@ -41,14 +40,20 @@ trap 'rollback_release 129' HUP
 trap 'rollback_release 130' INT
 trap 'rollback_release 143' TERM
 
-perl -pi -e "s/^VERSION=\"\Q$current\E\"/VERSION=\"$new_version\"/" src/runtime.sh install.sh
+if [[ "$new_version" != "$current" ]]; then
+    perl -pi -e "s/^VERSION=\"\Q$current\E\"/VERSION=\"$new_version\"/" src/runtime.sh install.sh
+else
+    echo "Source is already v$current; validating and tagging the current release."
+fi
 make build
 make test
 make lint
 make check-generated
 
 git add src/runtime.sh ssh-key-manager ssh-key-manager.sha256 install.sh
-git commit -m "chore(release): v$new_version"
+if ! git diff --cached --quiet; then
+    git commit -m "chore(release): v$new_version"
+fi
 git tag -a "v$new_version" -m "SSH Key Manager v$new_version"
 trap - ERR HUP INT TERM
 rm -rf "$backup_dir"

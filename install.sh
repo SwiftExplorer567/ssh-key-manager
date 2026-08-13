@@ -149,5 +149,4 @@ case ":$PATH:" in
     *":$PREFIX:"*) ;;
     *) echo "Add $PREFIX to PATH, then run: skm" ;;
 esac
-echo "Next: skm host add storage admin 192.168.1.20"
-echo "      skm access link storage"
+echo "Next: run skm, then choose Machines > Add a machine."
