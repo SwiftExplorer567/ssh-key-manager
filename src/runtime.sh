@@ -31,14 +31,13 @@ if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
     C_SILVER=$'\033[38;5;250m'
     C_MUTED=$'\033[38;5;245m'
     C_DIM=$'\033[2m'
-    C_REVERSE=$'\033[7m'
     C_GREEN=$'\033[38;5;114m'
     C_YELLOW=$'\033[38;5;221m'
     C_RED=$'\033[38;5;203m'
     C_BOLD=$'\033[1m'
     C_RESET=$'\033[0m'
 else
-    C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_REVERSE=""
+    C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM=""
     C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
 fi
 

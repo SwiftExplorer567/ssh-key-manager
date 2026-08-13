@@ -33,14 +33,13 @@ if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
     C_SILVER=$'\033[38;5;250m'
     C_MUTED=$'\033[38;5;245m'
     C_DIM=$'\033[2m'
-    C_REVERSE=$'\033[7m'
     C_GREEN=$'\033[38;5;114m'
     C_YELLOW=$'\033[38;5;221m'
     C_RED=$'\033[38;5;203m'
     C_BOLD=$'\033[1m'
     C_RESET=$'\033[0m'
 else
-    C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_REVERSE=""
+    C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM=""
     C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
 fi
 
@@ -348,8 +347,11 @@ interactive_grant_other_device() {
                     is_local_host "$i" && continue
                     access_grant_public_key "${HOST_NAMES[$i]}" "$public_key" || rc=1
                 done
-                (( rc == 0 )) && ui_notice success "Access granted" "The client key is authorized on all managed machines." || \
+                if (( rc == 0 )); then
+                    ui_notice success "Access granted" "The client key is authorized on all managed machines."
+                else
                     ui_notice warning "Partially completed" "Review the messages above; at least one machine could not be updated."
+                fi
             fi
             ;;
         *) return;;

@@ -209,8 +209,11 @@ interactive_grant_other_device() {
                     is_local_host "$i" && continue
                     access_grant_public_key "${HOST_NAMES[$i]}" "$public_key" || rc=1
                 done
-                (( rc == 0 )) && ui_notice success "Access granted" "The client key is authorized on all managed machines." || \
+                if (( rc == 0 )); then
+                    ui_notice success "Access granted" "The client key is authorized on all managed machines."
+                else
                     ui_notice warning "Partially completed" "Review the messages above; at least one machine could not be updated."
+                fi
             fi
             ;;
         *) return;;
