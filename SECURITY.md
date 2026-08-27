@@ -48,11 +48,11 @@ Changes in these areas deserve extra review:
 
 - `authorized_keys` parsing or mutation;
 - remote scripts in `remote/`;
-- SSH argument construction and host validation;
+- SSH argument construction, managed-identity enforcement, and host-key validation;
 - symlink and file-permission handling;
 - public-key and fingerprint validation;
 - trust config import/export;
-- updater checksum/version verification;
+- updater checksum/version verification and release provenance;
 - terminal rendering of attacker-controlled key comments;
 - GitHub Actions release permissions and artifact publication.
 
@@ -66,7 +66,9 @@ SKM is designed around several constraints:
 - authorization/config replacement is validated, permissioned, and backed up;
 - unsafe symlink targets are rejected;
 - imported trust metadata is validated before mutation;
-- updates are explicit and checksum verified;
+- an existing SKM management key is the only identity offered by SKM transport;
+- SSH host keys can be explicitly pinned and verified in an SKM-owned trust store;
+- updates are explicit, version-pinned, fail closed, checksum verified, and published with provenance metadata;
 - audit findings are read-only and never trigger automatic revocation.
 
 These properties reduce risk, but SKM does not protect a host that is already

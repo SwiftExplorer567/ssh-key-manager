@@ -6,7 +6,7 @@
 set -o pipefail
 umask 077
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 APP_NAME="SSH Key Manager"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 
@@ -15,12 +15,14 @@ HOSTS_FILE="${SKM_HOSTS_FILE:-$CONFIG_DIR/servers.conf}"
 SETTINGS_FILE="${SKM_SETTINGS_FILE:-$CONFIG_DIR/config}"
 IDENTITIES_FILE="${SKM_IDENTITIES_FILE:-$CONFIG_DIR/identities.conf}"
 POLICY_FILE="${SKM_POLICY_FILE:-$CONFIG_DIR/policy.conf}"
+KNOWN_HOSTS_FILE="${SKM_KNOWN_HOSTS_FILE:-$CONFIG_DIR/known_hosts}"
 SSH_DIR="${SKM_SSH_DIR:-$HOME/.ssh}"
 MANAGED_KEY="${SKM_MANAGED_KEY:-$SSH_DIR/id_ed25519_skm}"
 AUTHORIZED_KEYS="${SKM_AUTHORIZED_KEYS:-$SSH_DIR/authorized_keys}"
 STRICT_HOST_KEY_CHECKING="${SKM_STRICT_HOST_KEY_CHECKING:-accept-new}"
 UPDATE_STATE_FILE="${SKM_UPDATE_STATE_FILE:-$CONFIG_DIR/update.state}"
 AUTO_UPDATE_CHECK="${SKM_AUTO_UPDATE_CHECK:-true}"
+BACKUP_RETENTION="${SKM_BACKUP_RETENTION:-5}"
 
 declare -a HOST_NAMES HOST_USERS HOST_ADDRS HOST_PORTS HOST_STATUSES
 MENU_RESULT=-1
@@ -77,6 +79,16 @@ file_mode() {
     if [[ "$(uname -s)" == "Darwin" ]]; then stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
 }
 
+prune_backups() {
+    local base="$1" keep="${2:-$BACKUP_RETENTION}" n=0 file
+    [[ "$keep" =~ ^[0-9]+$ ]] || keep=5
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        n=$((n + 1))
+        if (( n > keep )); then rm -f -- "$file"; fi
+    done < <(ls -1t "$base".pre-* 2>/dev/null || true)
+}
+
 confirm() {
     local prompt="$1" default="${2:-n}" answer
     if [[ "${SKM_ASSUME_YES:-0}" == "1" ]]; then return 0; fi
@@ -102,7 +114,6 @@ prompt() {
     printf '%s' "${value:-$default}"
 }
 
-
 ensure_runtime() {
     command -v ssh >/dev/null 2>&1 || die "OpenSSH client is required (ssh)."
     command -v ssh-keygen >/dev/null 2>&1 || die "OpenSSH key tools are required (ssh-keygen)."
@@ -111,7 +122,8 @@ ensure_runtime() {
     [[ -e "$HOSTS_FILE" ]] || : > "$HOSTS_FILE"
     [[ -e "$IDENTITIES_FILE" ]] || : > "$IDENTITIES_FILE"
     [[ -e "$POLICY_FILE" ]] || : > "$POLICY_FILE"
-    chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" "$POLICY_FILE" 2>/dev/null || true
+    [[ -e "$KNOWN_HOSTS_FILE" ]] || : > "$KNOWN_HOSTS_FILE"
+    chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" "$POLICY_FILE" "$KNOWN_HOSTS_FILE" 2>/dev/null || true
 }
 
 load_settings() {
@@ -637,6 +649,7 @@ load_hosts() {
 
 save_hosts() {
     local tmp i
+    [[ ! -L "$HOSTS_FILE" ]] || { fail "Refusing to replace symlinked machine registry."; return 1; }
     tmp=$(mktemp "$CONFIG_DIR/servers.conf.XXXXXX") || return 1
     chmod 600 "$tmp" 2>/dev/null || true
     for i in "${!HOST_NAMES[@]}"; do
@@ -663,13 +676,23 @@ require_host() {
     return 1
 }
 
-is_local_host() {
-    local address="${HOST_ADDRS[$1]}"
+address_is_local() {
+    local address="$1"
     [[ "$address" == "local" || "$address" == "localhost" || "$address" == "127.0.0.1" || "$address" == "::1" ]]
 }
 
-ssh_target() { printf '%s@%s' "${HOST_USERS[$1]}" "${HOST_ADDRS[$1]}"; }
+is_local_host() { address_is_local "${HOST_ADDRS[$1]}"; }
 
+other_local_host_exists() {
+    local excluded="${1:--1}" i
+    for i in "${!HOST_NAMES[@]}"; do
+        [[ "$i" == "$excluded" ]] && continue
+        is_local_host "$i" && return 0
+    done
+    return 1
+}
+
+ssh_target() { printf '%s@%s' "${HOST_USERS[$1]}" "${HOST_ADDRS[$1]}"; }
 
 host_list() {
     if (( ${#HOST_NAMES[@]} == 0 )); then
@@ -683,6 +706,17 @@ host_list() {
     done
 }
 
+host_show() {
+    local index
+    require_host "$1" || return 1
+    index=$RESOLVED_HOST_INDEX
+    printf 'Name: %s\n' "${HOST_NAMES[$index]}"
+    printf 'User: %s\n' "${HOST_USERS[$index]}"
+    printf 'Host: %s\n' "${HOST_ADDRS[$index]}"
+    printf 'Port: %s\n' "${HOST_PORTS[$index]}"
+    if is_local_host "$index"; then printf 'Local: yes\n'; else printf 'Local: no\n'; fi
+}
+
 host_add() {
     local name="${1:-}" user="${2:-}" host="${3:-}" port="${4:-22}"
     [[ -n "$name" ]] || name=$(prompt "Short machine name (example: storage)")
@@ -694,19 +728,117 @@ host_add() {
     valid_host "$host" || { fail "Invalid hostname or IP."; return 1; }
     valid_port "$port" || { fail "Port must be between 1 and 65535."; return 1; }
     if host_index "$name" >/dev/null 2>&1; then fail "Machine '$name' already exists."; return 1; fi
+    if address_is_local "$host" && other_local_host_exists; then
+        fail "Only one saved machine may represent this local SKM node."
+        return 1
+    fi
     HOST_NAMES+=("$name"); HOST_USERS+=("$user"); HOST_ADDRS+=("$host"); HOST_PORTS+=("$port")
     save_hosts || { fail "Could not save machine."; return 1; }
     ok "Saved $name ($user@$host:$port)."
 }
 
+host_policy_reference_count() {
+    local name="$1" i count=0
+    load_policy
+    for i in "${!POLICY_HOSTS[@]}"; do
+        [[ "${POLICY_HOSTS[$i]}" == "$name" ]] && count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
+
+host_rename() {
+    local old_name="$1" new_name="$2" index i
+    local -a old_policy_hosts
+    valid_name "$new_name" || { fail "Invalid new machine name."; return 1; }
+    require_host "$old_name" || return 1
+    index=$RESOLVED_HOST_INDEX
+    if host_index "$new_name" >/dev/null 2>&1; then fail "Machine '$new_name' already exists."; return 1; fi
+    load_policy
+    old_policy_hosts=("${POLICY_HOSTS[@]}")
+    HOST_NAMES[index]="$new_name"
+    for i in "${!POLICY_HOSTS[@]}"; do
+        [[ "${POLICY_HOSTS[$i]}" == "$old_name" ]] && POLICY_HOSTS[i]="$new_name"
+    done
+    if ! save_hosts || ! save_policy; then
+        HOST_NAMES[index]="$old_name"
+        POLICY_HOSTS=("${old_policy_hosts[@]}")
+        save_hosts >/dev/null 2>&1 || true
+        save_policy >/dev/null 2>&1 || true
+        fail "Could not rename machine safely; previous configuration was restored."
+        return 1
+    fi
+    ok "Renamed machine $old_name to $new_name; policy references were migrated."
+}
+
+host_edit() {
+    local name="$1" user="$2" host="$3" port="${4:-22}" index
+    require_host "$name" || return 1
+    index=$RESOLVED_HOST_INDEX
+    valid_user "$user" || { fail "Invalid SSH user."; return 1; }
+    valid_host "$host" || { fail "Invalid hostname or IP."; return 1; }
+    valid_port "$port" || { fail "Port must be between 1 and 65535."; return 1; }
+    if address_is_local "$host" && other_local_host_exists "$index"; then
+        fail "Only one saved machine may represent this local SKM node."
+        return 1
+    fi
+    HOST_USERS[index]="$user"
+    HOST_ADDRS[index]="$host"
+    HOST_PORTS[index]="$port"
+    save_hosts || { fail "Could not update machine."; return 1; }
+    ok "Updated $name ($user@$host:$port)."
+}
+
 host_remove() {
-    local name="$1" index
-    require_host "$name" || return 1; index=$RESOLVED_HOST_INDEX
+    local name="$1" force="${2:-}" index refs i
+    local -a old_names old_users old_addrs old_ports old_policy_fps old_policy_hosts
+    require_host "$name" || return 1
+    index=$RESOLVED_HOST_INDEX
+    refs=$(host_policy_reference_count "$name")
+    if (( refs > 0 )) && [[ "$force" != "--force" ]]; then
+        fail "Machine '$name' is referenced by $refs desired-state policy rule(s). Use --force to remove the machine and those policy rules."
+        return 1
+    fi
+
+    old_names=("${HOST_NAMES[@]}"); old_users=("${HOST_USERS[@]}")
+    old_addrs=("${HOST_ADDRS[@]}"); old_ports=("${HOST_PORTS[@]}")
+    old_policy_fps=("${POLICY_FINGERPRINTS[@]}"); old_policy_hosts=("${POLICY_HOSTS[@]}")
+
     unset 'HOST_NAMES[index]' 'HOST_USERS[index]' 'HOST_ADDRS[index]' 'HOST_PORTS[index]'
     HOST_NAMES=("${HOST_NAMES[@]}"); HOST_USERS=("${HOST_USERS[@]}")
     HOST_ADDRS=("${HOST_ADDRS[@]}"); HOST_PORTS=("${HOST_PORTS[@]}")
-    save_hosts || { fail "Could not save machine list."; return 1; }
-    ok "Removed $name. SSH keys were not changed."
+
+    if (( refs > 0 )); then
+        local -a kept_fps kept_hosts
+        local kept_count=0
+        kept_fps=() kept_hosts=()
+        for i in "${!POLICY_HOSTS[@]}"; do
+            [[ "${POLICY_HOSTS[$i]}" == "$name" ]] && continue
+            kept_fps+=("${POLICY_FINGERPRINTS[$i]}")
+            kept_hosts+=("${POLICY_HOSTS[$i]}")
+            kept_count=$((kept_count + 1))
+        done
+        POLICY_FINGERPRINTS=()
+        POLICY_HOSTS=()
+        if (( kept_count > 0 )); then
+            POLICY_FINGERPRINTS=("${kept_fps[@]}")
+            POLICY_HOSTS=("${kept_hosts[@]}")
+        fi
+    fi
+
+    if ! save_hosts || ! save_policy; then
+        HOST_NAMES=("${old_names[@]}"); HOST_USERS=("${old_users[@]}")
+        HOST_ADDRS=("${old_addrs[@]}"); HOST_PORTS=("${old_ports[@]}")
+        POLICY_FINGERPRINTS=("${old_policy_fps[@]}"); POLICY_HOSTS=("${old_policy_hosts[@]}")
+        save_hosts >/dev/null 2>&1 || true
+        save_policy >/dev/null 2>&1 || true
+        fail "Could not remove machine safely; previous configuration was restored."
+        return 1
+    fi
+    if (( refs > 0 )); then
+        ok "Removed $name and $refs policy rule(s). SSH keys were not changed."
+    else
+        ok "Removed $name. SSH keys were not changed."
+    fi
 }
 
 host_test() {
@@ -719,14 +851,147 @@ host_test() {
     fi
 }
 
+# --- src/host_trust.sh ---
+# shellcheck shell=bash
+
+host_known_hosts_token_values() {
+    local host="$1" port="$2"
+    if [[ "$port" == "22" ]]; then printf '%s' "$host"; else printf '[%s]:%s' "$host" "$port"; fi
+}
+
+host_known_hosts_token() {
+    local index="$1"
+    host_known_hosts_token_values "${HOST_ADDRS[$index]}" "${HOST_PORTS[$index]}"
+}
+
+host_has_pin() {
+    local index="$1" token
+    [[ -s "$KNOWN_HOSTS_FILE" ]] || return 1
+    token=$(host_known_hosts_token "$index")
+    ssh-keygen -F "$token" -f "$KNOWN_HOSTS_FILE" >/dev/null 2>&1
+}
+
+host_scan_keys() {
+    local index="$1" host="${HOST_ADDRS[$1]}" port="${HOST_PORTS[$1]}"
+    command -v ssh-keyscan >/dev/null 2>&1 || { fail "ssh-keyscan is required for host trust commands."; return 1; }
+    is_local_host "$index" && { fail "Local machine host keys are not pinned through SKM."; return 1; }
+    ssh-keyscan -T 5 -p "$port" "$host" 2>/dev/null | awk 'NF >= 3 && $2 ~ /^(ssh-|ecdsa-|sk-)/ { print $1, $2, $3 }'
+}
+
+host_key_fingerprint_line() {
+    local line="$1" key
+    key=$(awk '{print $2, $3}' <<< "$line")
+    printf '%s\n' "$key" | ssh-keygen -lf /dev/stdin 2>/dev/null | awk '{print $2}'
+}
+
+host_fingerprint() {
+    local index scan line fingerprint algorithm found=0
+    require_host "$1" || return 1
+    index=$RESOLVED_HOST_INDEX
+    scan=$(host_scan_keys "$index") || return 1
+    [[ -n "$scan" ]] || { fail "No SSH host keys were returned by ${HOST_NAMES[$index]}."; return 1; }
+    printf '%-26s %s\n' FINGERPRINT ALGORITHM
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        fingerprint=$(host_key_fingerprint_line "$line")
+        algorithm=$(awk '{print $2}' <<< "$line")
+        [[ -n "$fingerprint" ]] || continue
+        found=1
+        printf '%-26s %s\n' "$fingerprint" "$algorithm"
+    done <<< "$scan"
+    (( found == 1 ))
+}
+
+host_trust() {
+    local name="$1" expected="${2:-}" index scan line fingerprint selected="" token tmp
+    require_host "$name" || return 1
+    index=$RESOLVED_HOST_INDEX
+    scan=$(host_scan_keys "$index") || return 1
+    [[ -n "$scan" ]] || { fail "No SSH host keys were returned by $name."; return 1; }
+
+    if [[ -n "$expected" ]]; then
+        [[ "$expected" =~ ^SHA256:[A-Za-z0-9+/=_-]+$ ]] || { fail "Expected host fingerprint must be SHA256:..."; return 1; }
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            fingerprint=$(host_key_fingerprint_line "$line")
+            if [[ "$fingerprint" == "$expected" ]]; then selected="$line"; break; fi
+        done <<< "$scan"
+        [[ -n "$selected" ]] || { fail "Scanned host keys did not match expected fingerprint $expected."; return 1; }
+    else
+        say "Host keys currently presented by $name:"
+        host_fingerprint "$name" || return 1
+        confirm "Pin these host keys for $name?" n || { fail "Host trust was not changed."; return 1; }
+        selected="$scan"
+    fi
+
+    [[ ! -L "$KNOWN_HOSTS_FILE" ]] || { fail "Refusing to replace symlinked SKM known_hosts file."; return 1; }
+    token=$(host_known_hosts_token "$index")
+    tmp=$(mktemp "$CONFIG_DIR/known_hosts.XXXXXX") || return 1
+    chmod 600 "$tmp" 2>/dev/null || true
+    if [[ -f "$KNOWN_HOSTS_FILE" ]]; then
+        awk -v wanted="$token" '$1 != wanted { print }' "$KNOWN_HOSTS_FILE" > "$tmp"
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        printf '%s %s %s\n' "$token" "$(awk '{print $2}' <<< "$line")" "$(awk '{print $3}' <<< "$line")" >> "$tmp"
+    done <<< "$selected"
+    mv -f "$tmp" "$KNOWN_HOSTS_FILE"
+    chmod 600 "$KNOWN_HOSTS_FILE" 2>/dev/null || true
+    ok "Pinned SSH host trust for $name ($token)."
+}
+
+host_untrust() {
+    local index token tmp
+    require_host "$1" || return 1
+    index=$RESOLVED_HOST_INDEX
+    token=$(host_known_hosts_token "$index")
+    [[ ! -L "$KNOWN_HOSTS_FILE" ]] || { fail "Refusing to replace symlinked SKM known_hosts file."; return 1; }
+    tmp=$(mktemp "$CONFIG_DIR/known_hosts.XXXXXX") || return 1
+    chmod 600 "$tmp" 2>/dev/null || true
+    if [[ -f "$KNOWN_HOSTS_FILE" ]]; then awk -v wanted="$token" '$1 != wanted { print }' "$KNOWN_HOSTS_FILE" > "$tmp"; fi
+    mv -f "$tmp" "$KNOWN_HOSTS_FILE"
+    chmod 600 "$KNOWN_HOSTS_FILE" 2>/dev/null || true
+    ok "Removed SKM host-key pin for $1."
+}
+
+host_verify() {
+    local index token scan pinned line fp scan_fps="" matched=0
+    require_host "$1" || return 1
+    index=$RESOLVED_HOST_INDEX
+    host_has_pin "$index" || { fail "No SKM host-key pin exists for $1. Run: skm host trust $1"; return 1; }
+    token=$(host_known_hosts_token "$index")
+    scan=$(host_scan_keys "$index") || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        fp=$(host_key_fingerprint_line "$line")
+        [[ -n "$fp" ]] && scan_fps="${scan_fps}${scan_fps:+$'\n'}$fp"
+    done <<< "$scan"
+    pinned=$(awk -v wanted="$token" '$1 == wanted { print }' "$KNOWN_HOSTS_FILE")
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        fp=$(host_key_fingerprint_line "$line")
+        if [[ -n "$fp" ]] && grep -Fqx "$fp" <<< "$scan_fps"; then matched=1; break; fi
+    done <<< "$pinned"
+    if (( matched == 1 )); then
+        ok "Pinned SSH host key for $1 is still presented by the server."
+        return 0
+    fi
+    fail "SSH host key verification failed for $1; the pinned key is no longer presented."
+    return 1
+}
+
 # --- src/ssh_transport.sh ---
 # shellcheck shell=bash
 
 ssh_run() {
     local index="$1"; shift
     local target; target=$(ssh_target "$index")
-    local args=(-o "StrictHostKeyChecking=$STRICT_HOST_KEY_CHECKING" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -p "${HOST_PORTS[$index]}")
-    [[ -f "$MANAGED_KEY" ]] && args+=(-i "$MANAGED_KEY")
+    local args=(-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -p "${HOST_PORTS[$index]}")
+    if host_has_pin "$index"; then
+        args+=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS_FILE" -o GlobalKnownHostsFile=/dev/null)
+    else
+        args+=(-o "StrictHostKeyChecking=$STRICT_HOST_KEY_CHECKING")
+    fi
+    if [[ -f "$MANAGED_KEY" ]]; then
+        args+=(-i "$MANAGED_KEY" -o IdentitiesOnly=yes)
+    fi
     # Callers pass fixed, application-owned remote scripts only.
     # shellcheck disable=SC2029
     ssh "${args[@]}" "$target" "$@"
@@ -735,8 +1000,15 @@ ssh_run() {
 ssh_run_batch() {
     local index="$1"; shift
     local target; target=$(ssh_target "$index")
-    local args=(-o BatchMode=yes -o PasswordAuthentication=no -o "StrictHostKeyChecking=$STRICT_HOST_KEY_CHECKING" -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -p "${HOST_PORTS[$index]}")
-    [[ -f "$MANAGED_KEY" ]] && args+=(-i "$MANAGED_KEY")
+    local args=(-o BatchMode=yes -o PasswordAuthentication=no -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -p "${HOST_PORTS[$index]}")
+    if host_has_pin "$index"; then
+        args+=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS_FILE" -o GlobalKnownHostsFile=/dev/null)
+    else
+        args+=(-o "StrictHostKeyChecking=$STRICT_HOST_KEY_CHECKING")
+    fi
+    if [[ -f "$MANAGED_KEY" ]]; then
+        args+=(-i "$MANAGED_KEY" -o IdentitiesOnly=yes)
+    fi
     # Callers pass fixed, application-owned remote scripts only.
     # shellcheck disable=SC2029
     ssh "${args[@]}" "$target" "$@"
@@ -745,7 +1017,8 @@ ssh_run_batch() {
 # --- embedded remote programs ---
 REMOTE_ADD_SCRIPT=$'#!/bin/sh\n\nset -eu\numask 077\nssh_dir="$HOME/.ssh"\nauth="$ssh_dir/authorized_keys"\nmkdir -p "$ssh_dir"\nchmod 700 "$ssh_dir"\n[ ! -L "$auth" ] || { echo "unsafe-symlink" >&2; exit 20; }\nincoming=$(mktemp "$ssh_dir/skm.in.XXXXXX")\ntmp=$(mktemp "$ssh_dir/authorized_keys.skm.XXXXXX")\nlock="$ssh_dir/.skm-authorized-keys.lock"\ncleanup() { rm -f "$incoming" "$tmp"; rmdir "$lock" 2>/dev/null || true; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$incoming"\nblob=$(awk \'NR==1 {print $2}\' "$incoming")\n[ -n "$blob" ] || { echo "invalid-key" >&2; exit 21; }\nn=0\nwhile ! mkdir "$lock" 2>/dev/null; do n=$((n+1)); [ "$n" -lt 30 ] || exit 22; sleep 1; done\n[ -f "$auth" ] && cat "$auth" > "$tmp"\nif awk -v wanted="$blob" \'{ for (i=1; i<=NF; i++) if ($i == wanted) found=1 } END { exit !found }\' "$tmp"; then\n  echo exists\nelse\n  cat "$incoming" >> "$tmp"\n  echo added\nfi\nchmod 600 "$tmp"\nif [ -f "$auth" ]; then cp -p "$auth" "$auth.skm.bak" 2>/dev/null || true; fi\nmv -f "$tmp" "$auth"\nrmdir "$lock"\ntrap - EXIT HUP INT TERM\nrm -f "$incoming"'
 REMOTE_REMOVE_SCRIPT=$'#!/bin/sh\n\nset -eu\numask 077\nssh_dir="$HOME/.ssh"\nauth="$ssh_dir/authorized_keys"\n[ -f "$auth" ] && [ ! -L "$auth" ] || exit 20\nincoming=$(mktemp "$ssh_dir/skm.remove.XXXXXX")\ntmp=$(mktemp "$ssh_dir/authorized_keys.skm.XXXXXX")\nlock="$ssh_dir/.skm-authorized-keys.lock"\ncleanup() { rm -f "$incoming" "$tmp"; rmdir "$lock" 2>/dev/null || true; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$incoming"\nblob=$(cat "$incoming")\n[ -n "$blob" ] || exit 21\nn=0\nwhile ! mkdir "$lock" 2>/dev/null; do n=$((n+1)); [ "$n" -lt 30 ] || exit 22; sleep 1; done\nawk -v wanted="$blob" \'{ found=0; for (i=1; i<=NF; i++) if ($i == wanted) found=1; if (!found) print }\' "$auth" > "$tmp"\nchmod 600 "$tmp"\ncp -p "$auth" "$auth.skm.bak" 2>/dev/null || true\nmv -f "$tmp" "$auth"\nrmdir "$lock"\ntrap - EXIT HUP INT TERM\nrm -f "$incoming"'
-REMOTE_IDENTITIES_SYNC_SCRIPT=$'#!/usr/bin/env sh\nset -eu\numask 077\n\nconfig_dir="${SKM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ssh-key-manager}"\ntarget="$config_dir/identities.conf"\nmkdir -p "$config_dir"\nchmod 700 "$config_dir" 2>/dev/null || true\n\nif [ -L "$target" ]; then\n    echo "Refusing to replace symlinked identity registry." >&2\n    exit 1\nfi\n\ntmp=$(mktemp "$config_dir/identities.sync.XXXXXX")\ncleanup() { rm -f "$tmp"; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$tmp"\nchmod 600 "$tmp"\n\nawk -F\'|\' \'\n    NF != 4 { exit 1 }\n    length($1) < 1 || length($1) > 63 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ { exit 1 }\n    $2 !~ /^SHA256:[A-Za-z0-9+\\/=_-]+$/ { exit 1 }\n    $3 != "device" && $3 != "server" && $3 != "service" && $3 != "other" { exit 1 }\n    $4 != "active" && $4 != "retired" { exit 1 }\n    seen_name[$1]++ { exit 1 }\n    seen_fp[$2]++ { exit 1 }\n    END { if (NR == 0) exit 1 }\n\' "$tmp" || {\n    echo "Invalid identity registry payload." >&2\n    exit 1\n}\n\nstamp=$(date +%Y%m%d-%H%M%S)\nif [ -f "$target" ]; then\n    backup="$target.pre-sync-$stamp-$$"\n    cp -p "$target" "$backup"\n    chmod 600 "$backup" 2>/dev/null || true\nfi\n\nmv -f "$tmp" "$target"\nchmod 600 "$target"\ntrap - EXIT HUP INT TERM\ncount=$(wc -l < "$target" | tr -d \' \')\nprintf \'SYNCED %s\\n\' "$count"'
+REMOTE_IDENTITIES_SYNC_SCRIPT=$'#!/usr/bin/env sh\nset -eu\numask 077\n\nconfig_dir="${SKM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ssh-key-manager}"\ntarget="$config_dir/identities.conf"\nretention="${SKM_BACKUP_RETENTION:-5}"\ncase "$retention" in \'\'|*[!0-9]*) retention=5 ;; esac\nmkdir -p "$config_dir"\nchmod 700 "$config_dir" 2>/dev/null || true\n\nif [ -L "$target" ]; then\n    echo "Refusing to replace symlinked identity registry." >&2\n    exit 1\nfi\n\ntmp=$(mktemp "$config_dir/identities.sync.XXXXXX")\ncleanup() { rm -f "$tmp"; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$tmp"\nchmod 600 "$tmp"\n\nawk -F\'|\' \'\n    NF != 4 { exit 1 }\n    length($1) < 1 || length($1) > 63 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ { exit 1 }\n    $2 !~ /^SHA256:[A-Za-z0-9+\\/=_-]+$/ { exit 1 }\n    $3 != "device" && $3 != "server" && $3 != "service" && $3 != "other" { exit 1 }\n    $4 != "active" && $4 != "retired" { exit 1 }\n    seen_name[$1]++ { exit 1 }\n    seen_fp[$2]++ { exit 1 }\n    END { if (NR == 0) exit 1 }\n\' "$tmp" || {\n    echo "Invalid identity registry payload." >&2\n    exit 1\n}\n\nstamp=$(date +%Y%m%d-%H%M%S)\nif [ -f "$target" ]; then\n    backup="$target.pre-sync-$stamp-$$"\n    cp -p "$target" "$backup"\n    chmod 600 "$backup" 2>/dev/null || true\nfi\n\nmv -f "$tmp" "$target"\nchmod 600 "$target"\ntrap - EXIT HUP INT TERM\ncount=$(wc -l < "$target" | tr -d \' \')\n\nn=0\nfor old in $(ls -1t "$target".pre-sync-* 2>/dev/null || true); do\n    n=$((n + 1))\n    [ "$n" -le "$retention" ] || rm -f -- "$old"\ndone\n\nprintf \'SYNCED %s\\n\' "$count"'
+REMOTE_TRUST_STATE_SCRIPT=$'#!/usr/bin/env sh\nset -eu\n\nconfig_dir="${SKM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ssh-key-manager}"\nidentities="$config_dir/identities.conf"\npolicy="$config_dir/policy.conf"\n\n[ ! -L "$identities" ] || { echo "unsafe identity registry symlink" >&2; exit 31; }\n[ ! -L "$policy" ] || { echo "unsafe policy symlink" >&2; exit 32; }\n\nprintf \'SKM-REMOTE-TRUST|1\\n\'\nif [ -f "$identities" ]; then\n    while IFS= read -r line || [ -n "$line" ]; do\n        [ -n "$line" ] || continue\n        printf \'IDENTITY|%s\\n\' "$line"\n    done < "$identities"\nfi\nif [ -f "$policy" ]; then\n    while IFS= read -r line || [ -n "$line" ]; do\n        [ -n "$line" ] || continue\n        printf \'POLICY|%s\\n\' "$line"\n    done < "$policy"\nfi'
 
 # --- src/access.sh ---
 # shellcheck shell=bash
@@ -784,8 +1057,17 @@ read_public_key_file() {
     printf '%s' "$line"
 }
 
+key_path_is_safe() {
+    local path="$1" relative
+    [[ "$path" == "$SSH_DIR/"* ]] || return 1
+    relative="${path#"$SSH_DIR/"}"
+    [[ -n "$relative" && "$relative" != "." && "$relative" != ".." && "$relative" != */* ]]
+}
+
 ensure_managed_key() {
+    key_path_is_safe "$MANAGED_KEY" || { fail "Managed key must be a direct child of $SSH_DIR."; return 1; }
     if [[ -f "$MANAGED_KEY.pub" && -f "$MANAGED_KEY" ]]; then
+        [[ ! -L "$MANAGED_KEY" && ! -L "$MANAGED_KEY.pub" ]] || { fail "Managed keypair must not use symlinks: $MANAGED_KEY"; return 1; }
         chmod 600 "$MANAGED_KEY" 2>/dev/null || true
         chmod 644 "$MANAGED_KEY.pub" 2>/dev/null || true
         printf '%s' "$MANAGED_KEY.pub"
@@ -1142,8 +1424,10 @@ key_list() {
 }
 
 key_generate() {
-    local path="${1:-$MANAGED_KEY}" comment="${2:-skm@$(hostname 2>/dev/null || printf local)}"
-    [[ "$path" == "$SSH_DIR/"* ]] || { fail "Key must be created inside $SSH_DIR."; return 1; }
+    local path="${1:-$MANAGED_KEY}" comment="${2:-skm@$(hostname 2>/dev/null || printf local)}" clean_comment
+    key_path_is_safe "$path" || { fail "Key must be created as a direct child of $SSH_DIR."; return 1; }
+    clean_comment=$(sanitize_text "$comment")
+    [[ "$clean_comment" == "$comment" ]] || { fail "Key comment contains unsafe control characters."; return 1; }
     [[ ! -e "$path" && ! -e "$path.pub" ]] || { fail "Key already exists: $path"; return 1; }
     mkdir -p "$SSH_DIR" || { fail "Cannot create $SSH_DIR."; return 1; }
     chmod 700 "$SSH_DIR" 2>/dev/null || true
@@ -1158,26 +1442,116 @@ key_public() {
     read_public_key_file "$path" || return 1; say ""
 }
 
+doctor_file_mode() {
+    local path="$1" expected="$2" label="$3" mode
+    [[ -e "$path" ]] || return 0
+    if [[ -L "$path" ]]; then
+        fail "$label is a symlink: $path"
+        return 1
+    fi
+    mode=$(file_mode "$path" 2>/dev/null || true)
+    if [[ "$mode" == "$expected" ]]; then
+        ok "$label permissions: $expected"
+        return 0
+    fi
+    warn "$label permissions should be $expected (found ${mode:-unknown})."
+    return 1
+}
+
 doctor() {
-    local issues=0 mode file line type
-    say "$APP_NAME security check"
+    local issues=0 mode line type i pinned=0 unpinned=0
+    say "$APP_NAME trust health check"
+
+    if command -v ssh >/dev/null 2>&1; then
+        ok "OpenSSH client: available"
+    else
+        fail "OpenSSH client is missing."
+        issues=$((issues + 1))
+    fi
+    if command -v ssh-keygen >/dev/null 2>&1; then
+        ok "ssh-keygen: available"
+    else
+        fail "ssh-keygen is missing."
+        issues=$((issues + 1))
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        ok "curl: available for updates"
+    else
+        info "curl is unavailable; remote update checks/install will not work."
+    fi
+
+    if [[ -d "$CONFIG_DIR" ]]; then
+        mode=$(file_mode "$CONFIG_DIR" 2>/dev/null || true)
+        if [[ "$mode" == "700" ]]; then ok "SKM config directory permissions: 700"; else warn "SKM config directory permissions should be 700 (found ${mode:-unknown})."; issues=$((issues+1)); fi
+    else
+        warn "$CONFIG_DIR does not exist yet."
+    fi
+    doctor_file_mode "$HOSTS_FILE" 600 "machine registry" || issues=$((issues+1))
+    doctor_file_mode "$IDENTITIES_FILE" 600 "identity registry" || issues=$((issues+1))
+    doctor_file_mode "$POLICY_FILE" 600 "desired-state policy" || issues=$((issues+1))
+    doctor_file_mode "$KNOWN_HOSTS_FILE" 600 "SKM known_hosts" || issues=$((issues+1))
+    doctor_file_mode "$SETTINGS_FILE" 600 "SKM settings" || issues=$((issues+1))
+
     if [[ -d "$SSH_DIR" ]]; then
         mode=$(file_mode "$SSH_DIR" 2>/dev/null || true)
         if [[ "$mode" == "700" ]]; then ok "$SSH_DIR permissions: 700"; else warn "$SSH_DIR permissions should be 700 (found ${mode:-unknown})."; issues=$((issues+1)); fi
-    else warn "$SSH_DIR does not exist yet."; fi
-    if [[ -f "$AUTHORIZED_KEYS" ]]; then
-        if [[ -L "$AUTHORIZED_KEYS" ]]; then fail "$AUTHORIZED_KEYS is a symlink."; issues=$((issues+1)); fi
-        mode=$(file_mode "$AUTHORIZED_KEYS" 2>/dev/null || true)
-        if [[ "$mode" == "600" ]]; then ok "authorized_keys permissions: 600"; else warn "authorized_keys permissions should be 600 (found ${mode:-unknown})."; issues=$((issues+1)); fi
-        while IFS= read -r line; do
-            type=$(key_algorithm "$line")
-            if [[ "$type" == "ssh-rsa" || "$type" == "ssh-dss" ]]; then warn "Legacy authorized key type: $type ($(key_fingerprint "$line"))"; issues=$((issues+1)); fi
-        done < "$AUTHORIZED_KEYS"
+    else
+        warn "$SSH_DIR does not exist yet."
     fi
-    if [[ "$STRICT_HOST_KEY_CHECKING" == "yes" ]]; then ok "Strict host key checking: yes"; else warn "Strict host key checking is '$STRICT_HOST_KEY_CHECKING'. Use 'yes' for pre-provisioned known_hosts."; fi
+
+    if [[ -e "$MANAGED_KEY" || -e "$MANAGED_KEY.pub" ]]; then
+        if [[ -f "$MANAGED_KEY" && -f "$MANAGED_KEY.pub" && ! -L "$MANAGED_KEY" && ! -L "$MANAGED_KEY.pub" ]]; then
+            doctor_file_mode "$MANAGED_KEY" 600 "managed private key" || issues=$((issues+1))
+            doctor_file_mode "$MANAGED_KEY.pub" 644 "managed public key" || issues=$((issues+1))
+        else
+            fail "Managed keypair is incomplete or uses a symlink: $MANAGED_KEY"
+            issues=$((issues+1))
+        fi
+    else
+        info "Managed SKM keypair has not been created yet."
+    fi
+
+    if [[ -f "$AUTHORIZED_KEYS" || -L "$AUTHORIZED_KEYS" ]]; then
+        doctor_file_mode "$AUTHORIZED_KEYS" 600 "authorized_keys" || issues=$((issues+1))
+        if [[ -f "$AUTHORIZED_KEYS" && ! -L "$AUTHORIZED_KEYS" ]]; then
+            while IFS= read -r line; do
+                type=$(key_algorithm "$line")
+                if [[ "$type" == "ssh-rsa" || "$type" == "ssh-dss" ]]; then
+                    warn "Legacy authorized key type: $type ($(key_fingerprint "$line"))"
+                    issues=$((issues+1))
+                fi
+            done < "$AUTHORIZED_KEYS"
+        fi
+    fi
+
+    load_identities
+    load_policy
+    ok "Identity registry: ${#IDENTITY_NAMES[@]} registered"
+    if (( ${#POLICY_FINGERPRINTS[@]} > 0 )); then ok "Desired-state policy: ${#POLICY_FINGERPRINTS[@]} rule(s)"; else info "Desired-state policy is empty."; fi
+
+    for i in "${!HOST_NAMES[@]}"; do
+        is_local_host "$i" && continue
+        if host_has_pin "$i"; then
+            pinned=$((pinned + 1))
+            ok "${HOST_NAMES[$i]}: SSH host key is pinned"
+        else
+            unpinned=$((unpinned + 1))
+            warn "${HOST_NAMES[$i]}: SSH host key is not pinned; connection uses $STRICT_HOST_KEY_CHECKING trust mode."
+        fi
+    done
+    info "Host trust: $pinned pinned, $unpinned unpinned remote machine(s)."
+
+    if command -v gh >/dev/null 2>&1 && gh attestation verify --help >/dev/null 2>&1; then
+        info "GitHub CLI attestation verification is available for release provenance checks."
+    fi
     if command -v shellcheck >/dev/null 2>&1; then ok "shellcheck is available"; else info "shellcheck is optional at runtime."; fi
-    if (( issues == 0 )); then ok "No local key-permission issues found."; else warn "$issues issue(s) need attention."; fi
-    return "$issues"
+
+    if (( issues == 0 )); then
+        ok "Local trust health is clean."
+        return 0
+    fi
+    warn "$issues local security issue(s) need attention."
+    return 1
 }
 
 # --- src/identities.sh ---
@@ -1398,10 +1772,35 @@ access_matrix() {
 }
 
 AUDIT_ISSUES=0
+declare -a AUDIT_FINDING_CODES AUDIT_FINDING_MESSAGES
+
+audit_code_for_message() {
+    case "$1" in
+        *"invalid or unsupported authorized_keys entry"*) printf 'AUTHORIZED_ENTRY_INVALID' ;;
+        *"control characters in comment"*) printf 'KEY_COMMENT_CONTROL_CHARS' ;;
+        *"duplicate authorized fingerprint"*) printf 'AUTHORIZED_DUPLICATE' ;;
+        *"retired identity"*"still authorized"*) printf 'RETIRED_AUTHORIZED' ;;
+        *"unknown authorized fingerprint"*) printf 'AUTHORIZED_UNKNOWN' ;;
+        *"public key path is a symlink"*) printf 'PUBLIC_KEY_SYMLINK' ;;
+        *"duplicate public identity"*) printf 'PUBLIC_KEY_DUPLICATE' ;;
+        *"broad 'Host *' block sets IdentityFile"*) printf 'SSH_CONFIG_BROAD_IDENTITY' ;;
+        *"authorized_keys could not be read"*) printf 'AUDIT_INCOMPLETE' ;;
+        *"policy: unknown fingerprint"*) printf 'POLICY_UNKNOWN_IDENTITY' ;;
+        *"policy: unknown machine"*) printf 'POLICY_UNKNOWN_MACHINE' ;;
+        *"policy: retired identity"*) printf 'POLICY_RETIRED_EXPECTATION' ;;
+        *"MISSING expected identity"*) printf 'POLICY_MISSING' ;;
+        *"EXCESS identity"*) printf 'POLICY_EXCESS' ;;
+        *) printf 'TRUST_ISSUE' ;;
+    esac
+}
 
 audit_issue() {
+    local message="$*" code
+    code=$(audit_code_for_message "$message")
     AUDIT_ISSUES=$((AUDIT_ISSUES + 1))
-    warn "$*"
+    AUDIT_FINDING_CODES+=("$code")
+    AUDIT_FINDING_MESSAGES+=("$message")
+    warn "$message"
 }
 
 audit_authorized_lines() {
@@ -1476,6 +1875,8 @@ audit_ssh_config() {
 audit() {
     local i auth label
     AUDIT_ISSUES=0
+    AUDIT_FINDING_CODES=()
+    AUDIT_FINDING_MESSAGES=()
     load_identities
     load_policy
     say "SSH trust audit"
@@ -1711,10 +2112,27 @@ policy_matrix() {
 }
 
 POLICY_DRIFT=0
+declare -a POLICY_FINDING_CODES POLICY_FINDING_MESSAGES
+
+policy_code_for_message() {
+    case "$1" in
+        "MISSING "*) printf 'POLICY_MISSING' ;;
+        "EXCESS "*) printf 'POLICY_EXCESS' ;;
+        *"desired-state check is incomplete"*) printf 'POLICY_INCOMPLETE' ;;
+        *"policy: unknown fingerprint"*) printf 'POLICY_UNKNOWN_IDENTITY' ;;
+        *"policy: unknown machine"*) printf 'POLICY_UNKNOWN_MACHINE' ;;
+        *"policy: retired identity"*) printf 'POLICY_RETIRED_EXPECTATION' ;;
+        *) printf 'POLICY_DRIFT' ;;
+    esac
+}
 
 policy_drift_issue() {
+    local message="$*" code
+    code=$(policy_code_for_message "$message")
     POLICY_DRIFT=$((POLICY_DRIFT + 1))
-    warn "$*"
+    POLICY_FINDING_CODES+=("$code")
+    POLICY_FINDING_MESSAGES+=("$message")
+    warn "$message"
 }
 
 policy_validate_rules() {
@@ -1736,6 +2154,8 @@ policy_validate_rules() {
 policy_check() {
     local i j expected observed host
     POLICY_DRIFT=0
+    POLICY_FINDING_CODES=()
+    POLICY_FINDING_MESSAGES=()
     load_identities
     load_policy
     (( ${#POLICY_FINGERPRINTS[@]} > 0 )) || { fail "No desired-state policy configured. Run: skm policy expect IDENTITY MACHINE"; return 1; }
@@ -1830,6 +2250,8 @@ key_display_label() {
 
 declare -a IMPORT_ID_NAMES IMPORT_ID_FINGERPRINTS IMPORT_ID_TYPES IMPORT_ID_STATUSES
 declare -a IMPORT_POLICY_FINGERPRINTS IMPORT_POLICY_HOSTS
+declare -a SYNC_REMOTE_ID_NAMES SYNC_REMOTE_ID_FINGERPRINTS SYNC_REMOTE_ID_TYPES SYNC_REMOTE_ID_STATUSES
+declare -a SYNC_REMOTE_POLICY_FINGERPRINTS SYNC_REMOTE_POLICY_HOSTS
 
 config_write_snapshot() {
     local i
@@ -2014,17 +2436,121 @@ config_import_parsed() {
         return 1
     fi
     chmod 600 "$IDENTITIES_FILE" "$POLICY_FILE" 2>/dev/null || true
+    prune_backups "$IDENTITIES_FILE"
+    prune_backups "$POLICY_FILE"
     ok "Imported ${#IMPORT_ID_NAMES[@]} identities and ${#IMPORT_POLICY_FINGERPRINTS[@]} policy rules."
     info "Backups: $id_backup and $policy_backup"
 }
 
+sync_remote_identity_index_by_fingerprint() {
+    local wanted="$1" i
+    for i in "${!SYNC_REMOTE_ID_FINGERPRINTS[@]}"; do
+        [[ "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" == "$wanted" ]] && { printf '%s' "$i"; return 0; }
+    done
+    return 1
+}
+
+sync_parse_remote_state() {
+    local state="$1" line line_no=0 kind a b c d extra i
+    SYNC_REMOTE_ID_NAMES=() SYNC_REMOTE_ID_FINGERPRINTS=() SYNC_REMOTE_ID_TYPES=() SYNC_REMOTE_ID_STATUSES=()
+    SYNC_REMOTE_POLICY_FINGERPRINTS=() SYNC_REMOTE_POLICY_HOSTS=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_no=$((line_no + 1))
+        if (( line_no == 1 )); then
+            [[ "$line" == "SKM-REMOTE-TRUST|1" ]] || { fail "Remote SKM trust metadata has an invalid header."; return 1; }
+            continue
+        fi
+        [[ -n "$line" ]] || continue
+        IFS='|' read -r kind a b c d extra <<< "$line"
+        case "$kind" in
+            IDENTITY)
+                [[ -z "${extra:-}" && -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || { fail "Remote identity registry is malformed."; return 1; }
+                if ! valid_name "$a" || ! valid_fingerprint "$b" || ! valid_identity_type "$c" || ! valid_identity_status "$d"; then
+                    fail "Remote identity registry contains invalid metadata."
+                    return 1
+                fi
+                for i in "${!SYNC_REMOTE_ID_FINGERPRINTS[@]}"; do
+                    [[ "${SYNC_REMOTE_ID_NAMES[$i]}" != "$a" && "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" != "$b" ]] || { fail "Remote identity registry contains duplicates."; return 1; }
+                done
+                SYNC_REMOTE_ID_NAMES+=("$a"); SYNC_REMOTE_ID_FINGERPRINTS+=("$b"); SYNC_REMOTE_ID_TYPES+=("$c"); SYNC_REMOTE_ID_STATUSES+=("$d")
+                ;;
+            POLICY)
+                [[ -z "${c:-}" && -z "${d:-}" && -z "${extra:-}" && -n "$a" && -n "$b" ]] || { fail "Remote policy metadata is malformed."; return 1; }
+                valid_fingerprint "$a" || { fail "Remote policy contains an invalid fingerprint."; return 1; }
+                SYNC_REMOTE_POLICY_FINGERPRINTS+=("$a"); SYNC_REMOTE_POLICY_HOSTS+=("$b")
+                ;;
+            *) fail "Remote trust metadata contains unknown record '$kind'."; return 1 ;;
+        esac
+    done <<< "$state"
+    (( line_no > 0 )) || { fail "Remote SKM trust metadata is empty."; return 1; }
+}
+
+sync_policy_impact_count() {
+    local i idx count=0
+    for i in "${!SYNC_REMOTE_POLICY_FINGERPRINTS[@]}"; do
+        if ! idx=$(identity_index_by_fingerprint "${SYNC_REMOTE_POLICY_FINGERPRINTS[$i]}"); then
+            count=$((count + 1))
+        elif [[ "${IDENTITY_STATUSES[$idx]}" != "active" ]]; then
+            count=$((count + 1))
+        fi
+    done
+    printf '%s' "$count"
+}
+
+sync_print_plan() {
+    local machine="$1" i remote_idx action impact
+    say "Identity sync plan — $machine"
+    printf '%-10s %-24s %s\n' ACTION IDENTITY FINGERPRINT
+    for i in "${!IDENTITY_NAMES[@]}"; do
+        if remote_idx=$(sync_remote_identity_index_by_fingerprint "${IDENTITY_FINGERPRINTS[$i]}"); then
+            if [[ "${SYNC_REMOTE_ID_NAMES[$remote_idx]}" == "${IDENTITY_NAMES[$i]}" && \
+                  "${SYNC_REMOTE_ID_TYPES[$remote_idx]}" == "${IDENTITY_TYPES[$i]}" && \
+                  "${SYNC_REMOTE_ID_STATUSES[$remote_idx]}" == "${IDENTITY_STATUSES[$i]}" ]]; then
+                action="UNCHANGED"
+            else
+                action="UPDATE"
+            fi
+        else
+            action="ADD"
+        fi
+        printf '%-10s %-24s %s\n' "$action" "${IDENTITY_NAMES[$i]}" "${IDENTITY_FINGERPRINTS[$i]}"
+    done
+    for i in "${!SYNC_REMOTE_ID_NAMES[@]}"; do
+        if ! identity_index_by_fingerprint "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" >/dev/null 2>&1; then
+            printf '%-10s %-24s %s\n' REMOVE "${SYNC_REMOTE_ID_NAMES[$i]}" "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}"
+        fi
+    done
+    impact=$(sync_policy_impact_count)
+    if (( impact > 0 )); then
+        warn "$impact remote policy rule(s) would reference an identity that is missing or retired after sync."
+    else
+        ok "Remote desired-state policy remains valid after this identity sync."
+    fi
+}
+
 sync_identities() {
-    local machine="$1" index i payload="" output
+    local machine="$1" mode="${2:-}" index i payload="" output state impact
+    [[ -z "$mode" || "$mode" == "--dry-run" ]] || { fail "Usage: skm sync identities MACHINE [--dry-run]"; return 2; }
     require_host "$machine" || return 1
     index=$RESOLVED_HOST_INDEX
     is_local_host "$index" && { fail "Identity sync target must be a remote machine."; return 1; }
     load_identities
     (( ${#IDENTITY_NAMES[@]} > 0 )) || { fail "Identity registry is empty; refusing to replace remote registry."; return 1; }
+
+    state=$(ssh_run_batch "$index" "$REMOTE_TRUST_STATE_SCRIPT") || { fail "Could not read remote SKM trust metadata from $machine."; return 1; }
+    sync_parse_remote_state "$state" || return 1
+    sync_print_plan "$machine"
+    impact=$(sync_policy_impact_count)
+    if [[ "$mode" == "--dry-run" ]]; then
+        (( impact == 0 )) || return 1
+        info "Dry run only; no remote files were changed."
+        return 0
+    fi
+    if (( impact > 0 )); then
+        fail "Identity sync refused because it would invalidate remote desired-state policy. Update the remote policy first."
+        return 1
+    fi
+
     for i in "${!IDENTITY_NAMES[@]}"; do
         payload="${payload}${payload:+$'\n'}${IDENTITY_NAMES[$i]}|${IDENTITY_FINGERPRINTS[$i]}|${IDENTITY_TYPES[$i]}|${IDENTITY_STATUSES[$i]}"
     done
@@ -2048,40 +2574,57 @@ json_escape() {
     printf '%s' "$value"
 }
 
-json_command_result() {
-    local command_name="$1" rc="$2" output="$3" line issue first=1 issue_count=0
-    local issues=""
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == "warn  "* || "$line" == "error "* ]]; then
-            if [[ "$line" =~ ^warn[[:space:]]+[0-9]+[[:space:]]+(trust|policy)[[:space:]] ]]; then
-                continue
-            fi
-            issue="${line#warn  }"
-            issue="${issue#error }"
-            if (( first == 0 )); then issues="$issues,"; fi
-            issues="$issues\"$(json_escape "$issue")\""
-            first=0
-            issue_count=$((issue_count + 1))
+json_findings_result() {
+    local command_name="$1" rc="$2" source="$3" i first=1 issue_count=0
+    local -a codes messages
+    local issues="" findings=""
+    codes=() messages=()
+    if [[ "$source" == "audit" ]]; then
+        issue_count="$AUDIT_ISSUES"
+        if (( issue_count > 0 )); then
+            codes=("${AUDIT_FINDING_CODES[@]}")
+            messages=("${AUDIT_FINDING_MESSAGES[@]}")
         fi
-    done <<< "$output"
-    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s]}\n' \
+    else
+        issue_count="$POLICY_DRIFT"
+        if (( issue_count > 0 )); then
+            codes=("${POLICY_FINDING_CODES[@]}")
+            messages=("${POLICY_FINDING_MESSAGES[@]}")
+        fi
+    fi
+    if (( issue_count > 0 )); then
+        for i in "${!messages[@]}"; do
+            if (( first == 0 )); then
+                issues="$issues,"
+                findings="$findings,"
+            fi
+            issues="$issues\"$(json_escape "${messages[$i]}")\""
+            findings="$findings{\"code\":\"$(json_escape "${codes[$i]}")\",\"severity\":\"warning\",\"message\":\"$(json_escape "${messages[$i]}")\"}"
+            first=0
+        done
+    fi
+    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s],"findings":[%s]}\n' \
         "$(json_escape "$command_name")" "$(json_escape "$VERSION")" \
-        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues"
+        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues" "$findings"
 }
 
 audit_json() {
-    local output rc=0
+    local tmp rc=0
     local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
-    output=$(audit 2>&1) || rc=$?
-    json_command_result audit "$rc" "$output"
+    tmp=$(mktemp "$CONFIG_DIR/audit-json.XXXXXX") || return 1
+    audit > "$tmp" 2>&1 || rc=$?
+    rm -f "$tmp"
+    json_findings_result audit "$rc" audit
     return "$rc"
 }
 
 policy_check_json() {
-    local output rc=0
+    local tmp rc=0
     local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
-    output=$(policy_check 2>&1) || rc=$?
-    json_command_result policy-check "$rc" "$output"
+    tmp=$(mktemp "$CONFIG_DIR/policy-json.XXXXXX") || return 1
+    policy_check > "$tmp" 2>&1 || rc=$?
+    rm -f "$tmp"
+    json_findings_result policy-check "$rc" policy
     return "$rc"
 }
 
@@ -2242,9 +2785,16 @@ Common tasks:
 
 Commands:
   skm host list
+  skm host show NAME
   skm host add NAME USER HOST [PORT]
-  skm host remove NAME
+  skm host edit NAME USER HOST [PORT]
+  skm host rename NAME NEW_NAME
+  skm host remove NAME [--force]
   skm host test NAME
+  skm host fingerprint NAME          Show host-key fingerprints currently presented
+  skm host trust NAME [FINGERPRINT]  Pin scanned SSH host trust
+  skm host verify NAME               Verify the server still presents its pinned key
+  skm host untrust NAME              Remove the SKM host-key pin
   skm access grant NAME [KEY.pub]
   skm access receive NAME
   skm access link NAME [KEY.pub]
@@ -2266,7 +2816,7 @@ Commands:
   skm config export [PATH|-]         Export registry + policy (no private keys)
   skm config validate PATH|-         Validate a trust config before import
   skm config import PATH|-           Restore registry + policy with backups
-  skm sync identities MACHINE       Replace a remote canonical identity registry
+  skm sync identities MACHINE [--dry-run]  Plan or replace a remote identity registry
   skm key list                      Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
@@ -2299,10 +2849,17 @@ dispatch() {
             shift
             case "${1:-}" in
                 list) host_list;;
+                show) [[ -n "${2:-}" ]] || die "Usage: skm host show NAME"; host_show "$2";;
                 add) shift; host_add "${1:-}" "${2:-}" "${3:-}" "${4:-22}";;
-                remove) [[ -n "${2:-}" ]] || die "Usage: skm host remove NAME"; host_remove "$2";;
+                edit) [[ -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]] || die "Usage: skm host edit NAME USER HOST [PORT]"; host_edit "$2" "$3" "$4" "${5:-22}";;
+                rename) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm host rename NAME NEW_NAME"; host_rename "$2" "$3";;
+                remove) [[ -n "${2:-}" ]] || die "Usage: skm host remove NAME [--force]"; [[ -z "${3:-}" || "${3:-}" == "--force" ]] || die "Usage: skm host remove NAME [--force]"; host_remove "$2" "${3:-}";;
                 test) [[ -n "${2:-}" ]] || die "Usage: skm host test NAME"; host_test "$2";;
-                *) die "Usage: skm host {list|add|remove|test}";;
+                fingerprint) [[ -n "${2:-}" ]] || die "Usage: skm host fingerprint NAME"; host_fingerprint "$2";;
+                trust) [[ -n "${2:-}" ]] || die "Usage: skm host trust NAME [FINGERPRINT]"; host_trust "$2" "${3:-}";;
+                verify) [[ -n "${2:-}" ]] || die "Usage: skm host verify NAME"; host_verify "$2";;
+                untrust) [[ -n "${2:-}" ]] || die "Usage: skm host untrust NAME"; host_untrust "$2";;
+                *) die "Usage: skm host {list|show|add|edit|rename|remove|test|fingerprint|trust|verify|untrust}";;
             esac
             ;;
         access)
@@ -2361,8 +2918,12 @@ dispatch() {
         sync)
             shift
             case "${1:-}" in
-                identities) [[ -n "${2:-}" ]] || die "Usage: skm sync identities MACHINE"; sync_identities "$2";;
-                *) die "Usage: skm sync identities MACHINE";;
+                identities)
+                    [[ -n "${2:-}" ]] || die "Usage: skm sync identities MACHINE [--dry-run]"
+                    [[ -z "${3:-}" || "${3:-}" == "--dry-run" ]] || die "Usage: skm sync identities MACHINE [--dry-run]"
+                    sync_identities "$2" "${3:-}"
+                    ;;
+                *) die "Usage: skm sync identities MACHINE [--dry-run]";;
             esac
             ;;
         key)

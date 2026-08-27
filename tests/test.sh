@@ -9,6 +9,7 @@ failures=0
 tests=(
     runtime_hosts_test.sh
     access_test.sh
+    host_trust_test.sh
     identity_audit_test.sh
     policy_test.sh
     fleet_test.sh

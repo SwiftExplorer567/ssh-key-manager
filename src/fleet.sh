@@ -7,6 +7,8 @@
 
 declare -a IMPORT_ID_NAMES IMPORT_ID_FINGERPRINTS IMPORT_ID_TYPES IMPORT_ID_STATUSES
 declare -a IMPORT_POLICY_FINGERPRINTS IMPORT_POLICY_HOSTS
+declare -a SYNC_REMOTE_ID_NAMES SYNC_REMOTE_ID_FINGERPRINTS SYNC_REMOTE_ID_TYPES SYNC_REMOTE_ID_STATUSES
+declare -a SYNC_REMOTE_POLICY_FINGERPRINTS SYNC_REMOTE_POLICY_HOSTS
 
 config_write_snapshot() {
     local i
@@ -191,17 +193,121 @@ config_import_parsed() {
         return 1
     fi
     chmod 600 "$IDENTITIES_FILE" "$POLICY_FILE" 2>/dev/null || true
+    prune_backups "$IDENTITIES_FILE"
+    prune_backups "$POLICY_FILE"
     ok "Imported ${#IMPORT_ID_NAMES[@]} identities and ${#IMPORT_POLICY_FINGERPRINTS[@]} policy rules."
     info "Backups: $id_backup and $policy_backup"
 }
 
+sync_remote_identity_index_by_fingerprint() {
+    local wanted="$1" i
+    for i in "${!SYNC_REMOTE_ID_FINGERPRINTS[@]}"; do
+        [[ "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" == "$wanted" ]] && { printf '%s' "$i"; return 0; }
+    done
+    return 1
+}
+
+sync_parse_remote_state() {
+    local state="$1" line line_no=0 kind a b c d extra i
+    SYNC_REMOTE_ID_NAMES=() SYNC_REMOTE_ID_FINGERPRINTS=() SYNC_REMOTE_ID_TYPES=() SYNC_REMOTE_ID_STATUSES=()
+    SYNC_REMOTE_POLICY_FINGERPRINTS=() SYNC_REMOTE_POLICY_HOSTS=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_no=$((line_no + 1))
+        if (( line_no == 1 )); then
+            [[ "$line" == "SKM-REMOTE-TRUST|1" ]] || { fail "Remote SKM trust metadata has an invalid header."; return 1; }
+            continue
+        fi
+        [[ -n "$line" ]] || continue
+        IFS='|' read -r kind a b c d extra <<< "$line"
+        case "$kind" in
+            IDENTITY)
+                [[ -z "${extra:-}" && -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || { fail "Remote identity registry is malformed."; return 1; }
+                if ! valid_name "$a" || ! valid_fingerprint "$b" || ! valid_identity_type "$c" || ! valid_identity_status "$d"; then
+                    fail "Remote identity registry contains invalid metadata."
+                    return 1
+                fi
+                for i in "${!SYNC_REMOTE_ID_FINGERPRINTS[@]}"; do
+                    [[ "${SYNC_REMOTE_ID_NAMES[$i]}" != "$a" && "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" != "$b" ]] || { fail "Remote identity registry contains duplicates."; return 1; }
+                done
+                SYNC_REMOTE_ID_NAMES+=("$a"); SYNC_REMOTE_ID_FINGERPRINTS+=("$b"); SYNC_REMOTE_ID_TYPES+=("$c"); SYNC_REMOTE_ID_STATUSES+=("$d")
+                ;;
+            POLICY)
+                [[ -z "${c:-}" && -z "${d:-}" && -z "${extra:-}" && -n "$a" && -n "$b" ]] || { fail "Remote policy metadata is malformed."; return 1; }
+                valid_fingerprint "$a" || { fail "Remote policy contains an invalid fingerprint."; return 1; }
+                SYNC_REMOTE_POLICY_FINGERPRINTS+=("$a"); SYNC_REMOTE_POLICY_HOSTS+=("$b")
+                ;;
+            *) fail "Remote trust metadata contains unknown record '$kind'."; return 1 ;;
+        esac
+    done <<< "$state"
+    (( line_no > 0 )) || { fail "Remote SKM trust metadata is empty."; return 1; }
+}
+
+sync_policy_impact_count() {
+    local i idx count=0
+    for i in "${!SYNC_REMOTE_POLICY_FINGERPRINTS[@]}"; do
+        if ! idx=$(identity_index_by_fingerprint "${SYNC_REMOTE_POLICY_FINGERPRINTS[$i]}"); then
+            count=$((count + 1))
+        elif [[ "${IDENTITY_STATUSES[$idx]}" != "active" ]]; then
+            count=$((count + 1))
+        fi
+    done
+    printf '%s' "$count"
+}
+
+sync_print_plan() {
+    local machine="$1" i remote_idx action impact
+    say "Identity sync plan — $machine"
+    printf '%-10s %-24s %s\n' ACTION IDENTITY FINGERPRINT
+    for i in "${!IDENTITY_NAMES[@]}"; do
+        if remote_idx=$(sync_remote_identity_index_by_fingerprint "${IDENTITY_FINGERPRINTS[$i]}"); then
+            if [[ "${SYNC_REMOTE_ID_NAMES[$remote_idx]}" == "${IDENTITY_NAMES[$i]}" && \
+                  "${SYNC_REMOTE_ID_TYPES[$remote_idx]}" == "${IDENTITY_TYPES[$i]}" && \
+                  "${SYNC_REMOTE_ID_STATUSES[$remote_idx]}" == "${IDENTITY_STATUSES[$i]}" ]]; then
+                action="UNCHANGED"
+            else
+                action="UPDATE"
+            fi
+        else
+            action="ADD"
+        fi
+        printf '%-10s %-24s %s\n' "$action" "${IDENTITY_NAMES[$i]}" "${IDENTITY_FINGERPRINTS[$i]}"
+    done
+    for i in "${!SYNC_REMOTE_ID_NAMES[@]}"; do
+        if ! identity_index_by_fingerprint "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" >/dev/null 2>&1; then
+            printf '%-10s %-24s %s\n' REMOVE "${SYNC_REMOTE_ID_NAMES[$i]}" "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}"
+        fi
+    done
+    impact=$(sync_policy_impact_count)
+    if (( impact > 0 )); then
+        warn "$impact remote policy rule(s) would reference an identity that is missing or retired after sync."
+    else
+        ok "Remote desired-state policy remains valid after this identity sync."
+    fi
+}
+
 sync_identities() {
-    local machine="$1" index i payload="" output
+    local machine="$1" mode="${2:-}" index i payload="" output state impact
+    [[ -z "$mode" || "$mode" == "--dry-run" ]] || { fail "Usage: skm sync identities MACHINE [--dry-run]"; return 2; }
     require_host "$machine" || return 1
     index=$RESOLVED_HOST_INDEX
     is_local_host "$index" && { fail "Identity sync target must be a remote machine."; return 1; }
     load_identities
     (( ${#IDENTITY_NAMES[@]} > 0 )) || { fail "Identity registry is empty; refusing to replace remote registry."; return 1; }
+
+    state=$(ssh_run_batch "$index" "$REMOTE_TRUST_STATE_SCRIPT") || { fail "Could not read remote SKM trust metadata from $machine."; return 1; }
+    sync_parse_remote_state "$state" || return 1
+    sync_print_plan "$machine"
+    impact=$(sync_policy_impact_count)
+    if [[ "$mode" == "--dry-run" ]]; then
+        (( impact == 0 )) || return 1
+        info "Dry run only; no remote files were changed."
+        return 0
+    fi
+    if (( impact > 0 )); then
+        fail "Identity sync refused because it would invalidate remote desired-state policy. Update the remote policy first."
+        return 1
+    fi
+
     for i in "${!IDENTITY_NAMES[@]}"; do
         payload="${payload}${payload:+$'\n'}${IDENTITY_NAMES[$i]}|${IDENTITY_FINGERPRINTS[$i]}|${IDENTITY_TYPES[$i]}|${IDENTITY_STATUSES[$i]}"
     done
@@ -225,39 +331,56 @@ json_escape() {
     printf '%s' "$value"
 }
 
-json_command_result() {
-    local command_name="$1" rc="$2" output="$3" line issue first=1 issue_count=0
-    local issues=""
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == "warn  "* || "$line" == "error "* ]]; then
-            if [[ "$line" =~ ^warn[[:space:]]+[0-9]+[[:space:]]+(trust|policy)[[:space:]] ]]; then
-                continue
-            fi
-            issue="${line#warn  }"
-            issue="${issue#error }"
-            if (( first == 0 )); then issues="$issues,"; fi
-            issues="$issues\"$(json_escape "$issue")\""
-            first=0
-            issue_count=$((issue_count + 1))
+json_findings_result() {
+    local command_name="$1" rc="$2" source="$3" i first=1 issue_count=0
+    local -a codes messages
+    local issues="" findings=""
+    codes=() messages=()
+    if [[ "$source" == "audit" ]]; then
+        issue_count="$AUDIT_ISSUES"
+        if (( issue_count > 0 )); then
+            codes=("${AUDIT_FINDING_CODES[@]}")
+            messages=("${AUDIT_FINDING_MESSAGES[@]}")
         fi
-    done <<< "$output"
-    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s]}\n' \
+    else
+        issue_count="$POLICY_DRIFT"
+        if (( issue_count > 0 )); then
+            codes=("${POLICY_FINDING_CODES[@]}")
+            messages=("${POLICY_FINDING_MESSAGES[@]}")
+        fi
+    fi
+    if (( issue_count > 0 )); then
+        for i in "${!messages[@]}"; do
+            if (( first == 0 )); then
+                issues="$issues,"
+                findings="$findings,"
+            fi
+            issues="$issues\"$(json_escape "${messages[$i]}")\""
+            findings="$findings{\"code\":\"$(json_escape "${codes[$i]}")\",\"severity\":\"warning\",\"message\":\"$(json_escape "${messages[$i]}")\"}"
+            first=0
+        done
+    fi
+    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s],"findings":[%s]}\n' \
         "$(json_escape "$command_name")" "$(json_escape "$VERSION")" \
-        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues"
+        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues" "$findings"
 }
 
 audit_json() {
-    local output rc=0
+    local tmp rc=0
     local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
-    output=$(audit 2>&1) || rc=$?
-    json_command_result audit "$rc" "$output"
+    tmp=$(mktemp "$CONFIG_DIR/audit-json.XXXXXX") || return 1
+    audit > "$tmp" 2>&1 || rc=$?
+    rm -f "$tmp"
+    json_findings_result audit "$rc" audit
     return "$rc"
 }
 
 policy_check_json() {
-    local output rc=0
+    local tmp rc=0
     local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
-    output=$(policy_check 2>&1) || rc=$?
-    json_command_result policy-check "$rc" "$output"
+    tmp=$(mktemp "$CONFIG_DIR/policy-json.XXXXXX") || return 1
+    policy_check > "$tmp" 2>&1 || rc=$?
+    rm -f "$tmp"
+    json_findings_result policy-check "$rc" policy
     return "$rc"
 }

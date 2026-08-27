@@ -15,8 +15,8 @@
 SSH Key Manager (SKM) is a terminal application for understanding and managing
 SSH public-key trust across a small set of Linux and macOS machines. It combines
 an observed access inventory, fingerprint-based identities, desired-state
-policy, trust auditing, configuration backup/restore, fleet identity sync, and
-JSON output for automation.
+policy, SSH host-key pinning, trust auditing, configuration backup/restore,
+fleet identity sync, and structured JSON output for automation.
 
 SKM deliberately **does not move or escrow private keys** and it does not open
 interactive SSH sessions. It manages public-key authorization and the metadata
@@ -41,6 +41,7 @@ SKM keeps those concerns separate and explicit.
 | Observed access | Where is a fingerprint authorized now? | `skm access matrix` |
 | Identity registry | Who/what does this fingerprint represent? | `skm identity ...` |
 | Desired state | Where should that identity be authorized? | `skm policy ...` |
+| Host trust | Is this SSH server still the one I pinned? | `skm host trust/verify ...` |
 | Audit | Is observed trust clean and consistent? | `skm audit` |
 | Fleet automation | Can I back up, sync, or script trust metadata? | `skm config ...`, `skm sync ...`, `--json` |
 
@@ -76,10 +77,14 @@ Important security properties:
 - `authorized_keys` changes are locked, atomic, permissioned, and backed up;
 - symlinked authorization/config targets are rejected where replacement would be unsafe;
 - remote mutations use fixed embedded scripts rather than user-controlled shell commands;
+- when the SKM management key exists, SSH uses it with `IdentitiesOnly=yes` so agent/default keys cannot silently satisfy management access;
+- remote host keys can be pinned in SKM's private `known_hosts`; pinned hosts force strict host-key verification;
 - public-key payloads travel over standard input instead of shell interpolation;
 - trust configuration exports contain identities and policy metadata, not private keys or `authorized_keys`;
 - there is no telemetry and updates are never installed silently;
-- update downloads are versioned, SHA-256 verified, syntax checked, and replaced atomically.
+- versioned release assets fail closed if unavailable; the installer never falls back to a moving branch;
+- update downloads are SHA-256/version/syntax verified and replaced atomically;
+- releases publish a source-commit manifest and GitHub build-provenance attestation for independent verification.
 
 For security reporting and project policy, see [SECURITY.md](SECURITY.md).
 
@@ -124,6 +129,18 @@ Run `skm` with no arguments to open the interactive dashboard.
 skm host add rpi5 root 192.168.1.20 22
 skm host test rpi5
 ```
+
+For stronger server identity assurance, inspect the presented host-key fingerprints,
+verify the expected fingerprint through an independent channel, then pin it:
+
+```bash
+skm host fingerprint rpi5
+skm host trust rpi5 'SHA256:...'
+skm host verify rpi5
+```
+
+`ssh-keyscan` discovers keys; it does not authenticate them by itself. See
+[SSH host trust](docs/host-trust.md).
 
 ### 2. Give this machine access
 
@@ -233,11 +250,14 @@ and replaces identity/policy metadata atomically.
 ### Synchronize canonical identities
 
 ```bash
+skm sync identities "Mac Mini" --dry-run
 skm sync identities "Mac Mini"
 ```
 
-This replaces the remote SKM identity registry using the existing management SSH
-path. The remote registry is validated, backed up, and written with mode `0600`.
+The dry run shows `ADD`, `UPDATE`, `REMOVE`, and `UNCHANGED` entries. Before any
+replacement, SKM reads the remote registry and policy and refuses a sync that
+would orphan a remote policy rule. Successful replacement is validated, backed
+up, and written with mode `0600`.
 
 **Policy is intentionally not synchronized.** Policy rules refer to machine
 aliases local to each SKM node, so blindly copying policy between managers could
@@ -255,7 +275,7 @@ skm audit --json
 Example clean result:
 
 ```json
-{"command":"audit","version":"1.4.0","ok":true,"exit_code":0,"issue_count":0,"issues":[]}
+{"command":"audit","version":"1.5.0","ok":true,"exit_code":0,"issue_count":0,"issues":[],"findings":[]}
 ```
 
 JSON mode preserves the same process exit status as the human-readable command,
@@ -266,11 +286,18 @@ See [Fleet configuration & automation](docs/fleet-automation.md) for details.
 ## Command reference
 
 ```text
-# Machines
+# Machines / SSH host trust
 skm host list
+skm host show NAME
 skm host add NAME USER HOST [PORT]
-skm host remove NAME
+skm host edit NAME USER HOST [PORT]
+skm host rename NAME NEW_NAME
+skm host remove NAME [--force]
 skm host test NAME
+skm host fingerprint NAME
+skm host trust NAME [FINGERPRINT]
+skm host verify NAME
+skm host untrust NAME
 
 # Access
 skm access grant NAME [KEY.pub]
@@ -300,7 +327,7 @@ skm policy check [--json]
 skm config export [PATH|-]
 skm config validate PATH|-
 skm config import PATH|-
-skm sync identities MACHINE
+skm sync identities MACHINE [--dry-run]
 
 # Public keys / audit
 skm key list
@@ -345,6 +372,7 @@ Default locations:
 | `~/.config/ssh-key-manager/identities.conf` | Canonical fingerprint registry (`0600`) |
 | `~/.config/ssh-key-manager/policy.conf` | Desired-state rules (`0600`) |
 | `~/.config/ssh-key-manager/config` | Allow-listed application settings |
+| `~/.config/ssh-key-manager/known_hosts` | SKM-managed pinned SSH host keys (`0600`) |
 | `~/.config/ssh-key-manager/update.state` | Cached release-check state |
 | `~/.ssh/id_ed25519_skm` | Local SKM private key (`0600`) |
 | `~/.ssh/id_ed25519_skm.pub` | Local SKM public key |
@@ -352,18 +380,11 @@ Default locations:
 
 Settings files are parsed as data and are not sourced as shell code.
 
-New hosts default to:
-
-```text
-StrictHostKeyChecking=accept-new
-```
-
-This rejects changed host keys but trusts a first-seen key. Environments with
-pre-provisioned `known_hosts` can set:
-
-```text
-STRICT_HOST_KEY_CHECKING="yes"
-```
+Unpinned hosts default to OpenSSH `StrictHostKeyChecking=accept-new`: a
+changed key is rejected, but a first-seen key is trusted. For security-sensitive
+hosts, prefer an explicit SKM pin after independently verifying the fingerprint.
+Once pinned, SKM uses its own `known_hosts`, forces `StrictHostKeyChecking=yes`,
+and disables global known-host fallback for that connection.
 
 ## Updates
 
@@ -375,9 +396,18 @@ skm update check
 skm update install
 ```
 
-The updater downloads the versioned release executable and checksum over HTTPS,
-verifies SHA-256, confirms the embedded version/shebang, runs `bash -n`, keeps
-the previous binary as `.previous`, and replaces the executable atomically.
+The updater downloads only versioned release assets over HTTPS. Missing assets
+fail closed rather than falling back to `main`. SKM verifies SHA-256, embedded
+version/shebang, and `bash -n`, keeps the previous binary as `.previous`, and
+replaces the executable atomically.
+
+Each release also publishes `release-manifest.txt` with the source commit and a
+GitHub build-provenance attestation. With GitHub CLI installed, a downloaded
+release artifact can be independently checked with:
+
+```bash
+gh attestation verify ssh-key-manager --repo SwiftExplorer567/ssh-key-manager
+```
 
 ## Project scope and non-goals
 
@@ -405,7 +435,8 @@ executable:
 |---|---|
 | `src/runtime.sh` | Runtime paths, settings, validation, output |
 | `src/hosts.sh` | Machine persistence and host operations |
-| `src/ssh_transport.sh` | SSH transport primitives |
+| `src/host_trust.sh` | SSH host-key discovery, pinning, and verification |
+| `src/ssh_transport.sh` | SSH transport primitives and managed-identity enforcement |
 | `src/access.sh` | Public-key inventory, grants, revocation |
 | `src/identities.sh` | Fingerprint identity registry |
 | `src/policy.sh` | Desired-state policy and drift engine |
@@ -436,7 +467,9 @@ Tests use isolated temporary HOME/config/SSH directories and do not touch the
 developer's real SSH configuration.
 
 CI validates the generated artifact, functional tests, Bash syntax, and
-ShellCheck on Ubuntu and macOS. Commit messages follow Conventional Commits.
+ShellCheck on Ubuntu and macOS. Ubuntu also starts a real isolated OpenSSH daemon
+to prove that SKM cannot authenticate through an unrelated ssh-agent identity.
+Commit messages follow Conventional Commits.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
@@ -445,7 +478,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 Releases are published automatically from `main` when the source version has
 been intentionally bumped to a version that does not yet have a `vX.Y.Z` tag.
 The release workflow reruns the full verification suite, creates an annotated
-tag, and publishes the executable plus SHA-256 checksum.
+tag, and publishes the executable, SHA-256 checksum, source-commit manifest, and
+GitHub build-provenance attestation.
 
 A merge that does not change the version is a no-op for release publication.
 This keeps documentation and maintenance commits from producing accidental
@@ -456,6 +490,8 @@ releases.
 - [Identity registry](docs/identity-registry.md)
 - [Desired-state SSH policy](docs/desired-state-policy.md)
 - [Fleet configuration & automation](docs/fleet-automation.md)
+- [SSH host trust](docs/host-trust.md)
+- [v1.5.0 security hardening notes](docs/v1.5.0.md)
 - [v1.2 migration notes](docs/migration-v1.2.md)
 
 ## Uninstall

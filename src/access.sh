@@ -34,8 +34,17 @@ read_public_key_file() {
     printf '%s' "$line"
 }
 
+key_path_is_safe() {
+    local path="$1" relative
+    [[ "$path" == "$SSH_DIR/"* ]] || return 1
+    relative="${path#"$SSH_DIR/"}"
+    [[ -n "$relative" && "$relative" != "." && "$relative" != ".." && "$relative" != */* ]]
+}
+
 ensure_managed_key() {
+    key_path_is_safe "$MANAGED_KEY" || { fail "Managed key must be a direct child of $SSH_DIR."; return 1; }
     if [[ -f "$MANAGED_KEY.pub" && -f "$MANAGED_KEY" ]]; then
+        [[ ! -L "$MANAGED_KEY" && ! -L "$MANAGED_KEY.pub" ]] || { fail "Managed keypair must not use symlinks: $MANAGED_KEY"; return 1; }
         chmod 600 "$MANAGED_KEY" 2>/dev/null || true
         chmod 644 "$MANAGED_KEY.pub" 2>/dev/null || true
         printf '%s' "$MANAGED_KEY.pub"
@@ -392,8 +401,10 @@ key_list() {
 }
 
 key_generate() {
-    local path="${1:-$MANAGED_KEY}" comment="${2:-skm@$(hostname 2>/dev/null || printf local)}"
-    [[ "$path" == "$SSH_DIR/"* ]] || { fail "Key must be created inside $SSH_DIR."; return 1; }
+    local path="${1:-$MANAGED_KEY}" comment="${2:-skm@$(hostname 2>/dev/null || printf local)}" clean_comment
+    key_path_is_safe "$path" || { fail "Key must be created as a direct child of $SSH_DIR."; return 1; }
+    clean_comment=$(sanitize_text "$comment")
+    [[ "$clean_comment" == "$comment" ]] || { fail "Key comment contains unsafe control characters."; return 1; }
     [[ ! -e "$path" && ! -e "$path.pub" ]] || { fail "Key already exists: $path"; return 1; }
     mkdir -p "$SSH_DIR" || { fail "Cannot create $SSH_DIR."; return 1; }
     chmod 700 "$SSH_DIR" 2>/dev/null || true
@@ -408,24 +419,114 @@ key_public() {
     read_public_key_file "$path" || return 1; say ""
 }
 
+doctor_file_mode() {
+    local path="$1" expected="$2" label="$3" mode
+    [[ -e "$path" ]] || return 0
+    if [[ -L "$path" ]]; then
+        fail "$label is a symlink: $path"
+        return 1
+    fi
+    mode=$(file_mode "$path" 2>/dev/null || true)
+    if [[ "$mode" == "$expected" ]]; then
+        ok "$label permissions: $expected"
+        return 0
+    fi
+    warn "$label permissions should be $expected (found ${mode:-unknown})."
+    return 1
+}
+
 doctor() {
-    local issues=0 mode file line type
-    say "$APP_NAME security check"
+    local issues=0 mode line type i pinned=0 unpinned=0
+    say "$APP_NAME trust health check"
+
+    if command -v ssh >/dev/null 2>&1; then
+        ok "OpenSSH client: available"
+    else
+        fail "OpenSSH client is missing."
+        issues=$((issues + 1))
+    fi
+    if command -v ssh-keygen >/dev/null 2>&1; then
+        ok "ssh-keygen: available"
+    else
+        fail "ssh-keygen is missing."
+        issues=$((issues + 1))
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        ok "curl: available for updates"
+    else
+        info "curl is unavailable; remote update checks/install will not work."
+    fi
+
+    if [[ -d "$CONFIG_DIR" ]]; then
+        mode=$(file_mode "$CONFIG_DIR" 2>/dev/null || true)
+        if [[ "$mode" == "700" ]]; then ok "SKM config directory permissions: 700"; else warn "SKM config directory permissions should be 700 (found ${mode:-unknown})."; issues=$((issues+1)); fi
+    else
+        warn "$CONFIG_DIR does not exist yet."
+    fi
+    doctor_file_mode "$HOSTS_FILE" 600 "machine registry" || issues=$((issues+1))
+    doctor_file_mode "$IDENTITIES_FILE" 600 "identity registry" || issues=$((issues+1))
+    doctor_file_mode "$POLICY_FILE" 600 "desired-state policy" || issues=$((issues+1))
+    doctor_file_mode "$KNOWN_HOSTS_FILE" 600 "SKM known_hosts" || issues=$((issues+1))
+    doctor_file_mode "$SETTINGS_FILE" 600 "SKM settings" || issues=$((issues+1))
+
     if [[ -d "$SSH_DIR" ]]; then
         mode=$(file_mode "$SSH_DIR" 2>/dev/null || true)
         if [[ "$mode" == "700" ]]; then ok "$SSH_DIR permissions: 700"; else warn "$SSH_DIR permissions should be 700 (found ${mode:-unknown})."; issues=$((issues+1)); fi
-    else warn "$SSH_DIR does not exist yet."; fi
-    if [[ -f "$AUTHORIZED_KEYS" ]]; then
-        if [[ -L "$AUTHORIZED_KEYS" ]]; then fail "$AUTHORIZED_KEYS is a symlink."; issues=$((issues+1)); fi
-        mode=$(file_mode "$AUTHORIZED_KEYS" 2>/dev/null || true)
-        if [[ "$mode" == "600" ]]; then ok "authorized_keys permissions: 600"; else warn "authorized_keys permissions should be 600 (found ${mode:-unknown})."; issues=$((issues+1)); fi
-        while IFS= read -r line; do
-            type=$(key_algorithm "$line")
-            if [[ "$type" == "ssh-rsa" || "$type" == "ssh-dss" ]]; then warn "Legacy authorized key type: $type ($(key_fingerprint "$line"))"; issues=$((issues+1)); fi
-        done < "$AUTHORIZED_KEYS"
+    else
+        warn "$SSH_DIR does not exist yet."
     fi
-    if [[ "$STRICT_HOST_KEY_CHECKING" == "yes" ]]; then ok "Strict host key checking: yes"; else warn "Strict host key checking is '$STRICT_HOST_KEY_CHECKING'. Use 'yes' for pre-provisioned known_hosts."; fi
+
+    if [[ -e "$MANAGED_KEY" || -e "$MANAGED_KEY.pub" ]]; then
+        if [[ -f "$MANAGED_KEY" && -f "$MANAGED_KEY.pub" && ! -L "$MANAGED_KEY" && ! -L "$MANAGED_KEY.pub" ]]; then
+            doctor_file_mode "$MANAGED_KEY" 600 "managed private key" || issues=$((issues+1))
+            doctor_file_mode "$MANAGED_KEY.pub" 644 "managed public key" || issues=$((issues+1))
+        else
+            fail "Managed keypair is incomplete or uses a symlink: $MANAGED_KEY"
+            issues=$((issues+1))
+        fi
+    else
+        info "Managed SKM keypair has not been created yet."
+    fi
+
+    if [[ -f "$AUTHORIZED_KEYS" || -L "$AUTHORIZED_KEYS" ]]; then
+        doctor_file_mode "$AUTHORIZED_KEYS" 600 "authorized_keys" || issues=$((issues+1))
+        if [[ -f "$AUTHORIZED_KEYS" && ! -L "$AUTHORIZED_KEYS" ]]; then
+            while IFS= read -r line; do
+                type=$(key_algorithm "$line")
+                if [[ "$type" == "ssh-rsa" || "$type" == "ssh-dss" ]]; then
+                    warn "Legacy authorized key type: $type ($(key_fingerprint "$line"))"
+                    issues=$((issues+1))
+                fi
+            done < "$AUTHORIZED_KEYS"
+        fi
+    fi
+
+    load_identities
+    load_policy
+    ok "Identity registry: ${#IDENTITY_NAMES[@]} registered"
+    if (( ${#POLICY_FINGERPRINTS[@]} > 0 )); then ok "Desired-state policy: ${#POLICY_FINGERPRINTS[@]} rule(s)"; else info "Desired-state policy is empty."; fi
+
+    for i in "${!HOST_NAMES[@]}"; do
+        is_local_host "$i" && continue
+        if host_has_pin "$i"; then
+            pinned=$((pinned + 1))
+            ok "${HOST_NAMES[$i]}: SSH host key is pinned"
+        else
+            unpinned=$((unpinned + 1))
+            warn "${HOST_NAMES[$i]}: SSH host key is not pinned; connection uses $STRICT_HOST_KEY_CHECKING trust mode."
+        fi
+    done
+    info "Host trust: $pinned pinned, $unpinned unpinned remote machine(s)."
+
+    if command -v gh >/dev/null 2>&1 && gh attestation verify --help >/dev/null 2>&1; then
+        info "GitHub CLI attestation verification is available for release provenance checks."
+    fi
     if command -v shellcheck >/dev/null 2>&1; then ok "shellcheck is available"; else info "shellcheck is optional at runtime."; fi
-    if (( issues == 0 )); then ok "No local key-permission issues found."; else warn "$issues issue(s) need attention."; fi
-    return "$issues"
+
+    if (( issues == 0 )); then
+        ok "Local trust health is clean."
+        return 0
+    fi
+    warn "$issues local security issue(s) need attention."
+    return 1
 }

@@ -4,7 +4,7 @@
 set -o pipefail
 umask 077
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 APP_NAME="SSH Key Manager"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 
@@ -13,12 +13,14 @@ HOSTS_FILE="${SKM_HOSTS_FILE:-$CONFIG_DIR/servers.conf}"
 SETTINGS_FILE="${SKM_SETTINGS_FILE:-$CONFIG_DIR/config}"
 IDENTITIES_FILE="${SKM_IDENTITIES_FILE:-$CONFIG_DIR/identities.conf}"
 POLICY_FILE="${SKM_POLICY_FILE:-$CONFIG_DIR/policy.conf}"
+KNOWN_HOSTS_FILE="${SKM_KNOWN_HOSTS_FILE:-$CONFIG_DIR/known_hosts}"
 SSH_DIR="${SKM_SSH_DIR:-$HOME/.ssh}"
 MANAGED_KEY="${SKM_MANAGED_KEY:-$SSH_DIR/id_ed25519_skm}"
 AUTHORIZED_KEYS="${SKM_AUTHORIZED_KEYS:-$SSH_DIR/authorized_keys}"
 STRICT_HOST_KEY_CHECKING="${SKM_STRICT_HOST_KEY_CHECKING:-accept-new}"
 UPDATE_STATE_FILE="${SKM_UPDATE_STATE_FILE:-$CONFIG_DIR/update.state}"
 AUTO_UPDATE_CHECK="${SKM_AUTO_UPDATE_CHECK:-true}"
+BACKUP_RETENTION="${SKM_BACKUP_RETENTION:-5}"
 
 declare -a HOST_NAMES HOST_USERS HOST_ADDRS HOST_PORTS HOST_STATUSES
 MENU_RESULT=-1
@@ -75,6 +77,16 @@ file_mode() {
     if [[ "$(uname -s)" == "Darwin" ]]; then stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
 }
 
+prune_backups() {
+    local base="$1" keep="${2:-$BACKUP_RETENTION}" n=0 file
+    [[ "$keep" =~ ^[0-9]+$ ]] || keep=5
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        n=$((n + 1))
+        if (( n > keep )); then rm -f -- "$file"; fi
+    done < <(ls -1t "$base".pre-* 2>/dev/null || true)
+}
+
 confirm() {
     local prompt="$1" default="${2:-n}" answer
     if [[ "${SKM_ASSUME_YES:-0}" == "1" ]]; then return 0; fi
@@ -100,7 +112,6 @@ prompt() {
     printf '%s' "${value:-$default}"
 }
 
-
 ensure_runtime() {
     command -v ssh >/dev/null 2>&1 || die "OpenSSH client is required (ssh)."
     command -v ssh-keygen >/dev/null 2>&1 || die "OpenSSH key tools are required (ssh-keygen)."
@@ -109,7 +120,8 @@ ensure_runtime() {
     [[ -e "$HOSTS_FILE" ]] || : > "$HOSTS_FILE"
     [[ -e "$IDENTITIES_FILE" ]] || : > "$IDENTITIES_FILE"
     [[ -e "$POLICY_FILE" ]] || : > "$POLICY_FILE"
-    chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" "$POLICY_FILE" 2>/dev/null || true
+    [[ -e "$KNOWN_HOSTS_FILE" ]] || : > "$KNOWN_HOSTS_FILE"
+    chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" "$POLICY_FILE" "$KNOWN_HOSTS_FILE" 2>/dev/null || true
 }
 
 load_settings() {

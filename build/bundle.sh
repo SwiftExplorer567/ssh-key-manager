@@ -21,11 +21,13 @@ append_module() {
     append_module "$ROOT/src/runtime.sh"
     append_module "$ROOT/src/ui.sh"
     append_module "$ROOT/src/hosts.sh"
+    append_module "$ROOT/src/host_trust.sh"
     append_module "$ROOT/src/ssh_transport.sh"
     printf '\n# --- embedded remote programs ---\n'
     printf 'REMOTE_ADD_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_add.sh")"
     printf 'REMOTE_REMOVE_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_remove.sh")"
     printf 'REMOTE_IDENTITIES_SYNC_SCRIPT=%q\n' "$(<"$ROOT/remote/identities_replace.sh")"
+    printf 'REMOTE_TRUST_STATE_SCRIPT=%q\n' "$(<"$ROOT/remote/trust_state.sh")"
     append_module "$ROOT/src/access.sh"
     append_module "$ROOT/src/identities.sh"
     append_module "$ROOT/src/policy.sh"

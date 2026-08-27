@@ -17,10 +17,12 @@ append_module() {
     append_module "$ROOT/src/runtime.sh"
     append_module "$ROOT/src/ui.sh"
     append_module "$ROOT/src/hosts.sh"
+    append_module "$ROOT/src/host_trust.sh"
     append_module "$ROOT/src/ssh_transport.sh"
     printf '\nREMOTE_ADD_SCRIPT=""\n'
     printf 'REMOTE_REMOVE_SCRIPT=""\n'
     printf 'REMOTE_IDENTITIES_SYNC_SCRIPT=""\n'
+    printf 'REMOTE_TRUST_STATE_SCRIPT=""\n'
     append_module "$ROOT/src/access.sh"
     append_module "$ROOT/src/identities.sh"
     append_module "$ROOT/src/policy.sh"
@@ -40,6 +42,7 @@ targets=(
     "$ROOT/remote/authorized_add.sh"
     "$ROOT/remote/authorized_remove.sh"
     "$ROOT/remote/identities_replace.sh"
+    "$ROOT/remote/trust_state.sh"
     "$ROOT/tests/test.sh"
     "$ROOT/tests/helpers/test_helper.sh"
 )
@@ -47,5 +50,10 @@ targets=(
 for path in "$ROOT"/tests/*_test.sh; do
     targets+=("$path")
 done
+if [[ -d "$ROOT/tests/integration" ]]; then
+    for path in "$ROOT"/tests/integration/*.sh; do
+        [[ -e "$path" ]] && targets+=("$path")
+    done
+fi
 
 shellcheck "${targets[@]}"

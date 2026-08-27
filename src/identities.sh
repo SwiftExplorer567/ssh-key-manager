@@ -215,10 +215,35 @@ access_matrix() {
 }
 
 AUDIT_ISSUES=0
+declare -a AUDIT_FINDING_CODES AUDIT_FINDING_MESSAGES
+
+audit_code_for_message() {
+    case "$1" in
+        *"invalid or unsupported authorized_keys entry"*) printf 'AUTHORIZED_ENTRY_INVALID' ;;
+        *"control characters in comment"*) printf 'KEY_COMMENT_CONTROL_CHARS' ;;
+        *"duplicate authorized fingerprint"*) printf 'AUTHORIZED_DUPLICATE' ;;
+        *"retired identity"*"still authorized"*) printf 'RETIRED_AUTHORIZED' ;;
+        *"unknown authorized fingerprint"*) printf 'AUTHORIZED_UNKNOWN' ;;
+        *"public key path is a symlink"*) printf 'PUBLIC_KEY_SYMLINK' ;;
+        *"duplicate public identity"*) printf 'PUBLIC_KEY_DUPLICATE' ;;
+        *"broad 'Host *' block sets IdentityFile"*) printf 'SSH_CONFIG_BROAD_IDENTITY' ;;
+        *"authorized_keys could not be read"*) printf 'AUDIT_INCOMPLETE' ;;
+        *"policy: unknown fingerprint"*) printf 'POLICY_UNKNOWN_IDENTITY' ;;
+        *"policy: unknown machine"*) printf 'POLICY_UNKNOWN_MACHINE' ;;
+        *"policy: retired identity"*) printf 'POLICY_RETIRED_EXPECTATION' ;;
+        *"MISSING expected identity"*) printf 'POLICY_MISSING' ;;
+        *"EXCESS identity"*) printf 'POLICY_EXCESS' ;;
+        *) printf 'TRUST_ISSUE' ;;
+    esac
+}
 
 audit_issue() {
+    local message="$*" code
+    code=$(audit_code_for_message "$message")
     AUDIT_ISSUES=$((AUDIT_ISSUES + 1))
-    warn "$*"
+    AUDIT_FINDING_CODES+=("$code")
+    AUDIT_FINDING_MESSAGES+=("$message")
+    warn "$message"
 }
 
 audit_authorized_lines() {
@@ -293,6 +318,8 @@ audit_ssh_config() {
 audit() {
     local i auth label
     AUDIT_ISSUES=0
+    AUDIT_FINDING_CODES=()
+    AUDIT_FINDING_MESSAGES=()
     load_identities
     load_policy
     say "SSH trust audit"
