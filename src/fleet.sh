@@ -332,28 +332,37 @@ json_escape() {
 }
 
 json_findings_result() {
-    local command_name="$1" rc="$2" source="$3" i first=1
+    local command_name="$1" rc="$2" source="$3" i first=1 issue_count=0
     local -a codes messages
     local issues="" findings=""
+    codes=() messages=()
     if [[ "$source" == "audit" ]]; then
-        codes=("${AUDIT_FINDING_CODES[@]}")
-        messages=("${AUDIT_FINDING_MESSAGES[@]}")
-    else
-        codes=("${POLICY_FINDING_CODES[@]}")
-        messages=("${POLICY_FINDING_MESSAGES[@]}")
-    fi
-    for i in "${!messages[@]}"; do
-        if (( first == 0 )); then
-            issues="$issues,"
-            findings="$findings,"
+        issue_count="$AUDIT_ISSUES"
+        if (( issue_count > 0 )); then
+            codes=("${AUDIT_FINDING_CODES[@]}")
+            messages=("${AUDIT_FINDING_MESSAGES[@]}")
         fi
-        issues="$issues\"$(json_escape "${messages[$i]}")\""
-        findings="$findings{\"code\":\"$(json_escape "${codes[$i]}")\",\"severity\":\"warning\",\"message\":\"$(json_escape "${messages[$i]}")\"}"
-        first=0
-    done
+    else
+        issue_count="$POLICY_DRIFT"
+        if (( issue_count > 0 )); then
+            codes=("${POLICY_FINDING_CODES[@]}")
+            messages=("${POLICY_FINDING_MESSAGES[@]}")
+        fi
+    fi
+    if (( issue_count > 0 )); then
+        for i in "${!messages[@]}"; do
+            if (( first == 0 )); then
+                issues="$issues,"
+                findings="$findings,"
+            fi
+            issues="$issues\"$(json_escape "${messages[$i]}")\""
+            findings="$findings{\"code\":\"$(json_escape "${codes[$i]}")\",\"severity\":\"warning\",\"message\":\"$(json_escape "${messages[$i]}")\"}"
+            first=0
+        done
+    fi
     printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s],"findings":[%s]}\n' \
         "$(json_escape "$command_name")" "$(json_escape "$VERSION")" \
-        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "${#messages[@]}" "$issues" "$findings"
+        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues" "$findings"
 }
 
 audit_json() {

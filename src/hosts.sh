@@ -181,14 +181,20 @@ host_remove() {
 
     if (( refs > 0 )); then
         local -a kept_fps kept_hosts
+        local kept_count=0
         kept_fps=() kept_hosts=()
         for i in "${!POLICY_HOSTS[@]}"; do
             [[ "${POLICY_HOSTS[$i]}" == "$name" ]] && continue
             kept_fps+=("${POLICY_FINGERPRINTS[$i]}")
             kept_hosts+=("${POLICY_HOSTS[$i]}")
+            kept_count=$((kept_count + 1))
         done
-        POLICY_FINGERPRINTS=("${kept_fps[@]}")
-        POLICY_HOSTS=("${kept_hosts[@]}")
+        POLICY_FINGERPRINTS=()
+        POLICY_HOSTS=()
+        if (( kept_count > 0 )); then
+            POLICY_FINGERPRINTS=("${kept_fps[@]}")
+            POLICY_HOSTS=("${kept_hosts[@]}")
+        fi
     fi
 
     if ! save_hosts || ! save_policy; then
