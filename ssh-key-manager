@@ -125,8 +125,8 @@ ensure_runtime() {
     [[ -e "$KNOWN_HOSTS_FILE" ]] || : > "$KNOWN_HOSTS_FILE"
     chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" "$POLICY_FILE" "$KNOWN_HOSTS_FILE" 2>/dev/null || true
     if [[ -f "$SETTINGS_FILE" && ! -L "$SETTINGS_FILE" ]]; then
-    chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
-fi
+        chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
+    fi
 }
 
 load_settings() {
