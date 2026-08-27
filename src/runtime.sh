@@ -4,13 +4,14 @@
 set -o pipefail
 umask 077
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 APP_NAME="SSH Key Manager"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 
 CONFIG_DIR="${SKM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ssh-key-manager}"
 HOSTS_FILE="${SKM_HOSTS_FILE:-$CONFIG_DIR/servers.conf}"
 SETTINGS_FILE="${SKM_SETTINGS_FILE:-$CONFIG_DIR/config}"
+IDENTITIES_FILE="${SKM_IDENTITIES_FILE:-$CONFIG_DIR/identities.conf}"
 SSH_DIR="${SKM_SSH_DIR:-$HOME/.ssh}"
 MANAGED_KEY="${SKM_MANAGED_KEY:-$SSH_DIR/id_ed25519_skm}"
 AUTHORIZED_KEYS="${SKM_AUTHORIZED_KEYS:-$SSH_DIR/authorized_keys}"
@@ -105,7 +106,8 @@ ensure_runtime() {
     mkdir -p "$CONFIG_DIR" "$SSH_DIR" || die "Cannot create configuration directories."
     chmod 700 "$CONFIG_DIR" "$SSH_DIR" 2>/dev/null || true
     [[ -e "$HOSTS_FILE" ]] || : > "$HOSTS_FILE"
-    chmod 600 "$HOSTS_FILE" 2>/dev/null || true
+    [[ -e "$IDENTITIES_FILE" ]] || : > "$IDENTITIES_FILE"
+    chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" 2>/dev/null || true
 }
 
 load_settings() {

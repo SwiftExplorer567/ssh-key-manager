@@ -6,7 +6,7 @@ set -o nounset
 set -o pipefail
 umask 077
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 SYSTEM_INSTALL=0
 PREFIX=""
@@ -77,7 +77,6 @@ if [[ -n "$source_ref" && -f "$source_ref" ]]; then
     if source_dir=$(cd "$(dirname "$source_ref")" 2>/dev/null && pwd); then :; else source_dir=""; fi
 fi
 source_file="${source_dir:+$source_dir/ssh-key-manager}"
-
 if [[ -f "$source_file" ]]; then
     cp "$source_file" "$tmp_dir/ssh-key-manager"
     if [[ -f "$source_file.sha256" ]]; then
