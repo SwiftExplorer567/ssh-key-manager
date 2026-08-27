@@ -76,6 +76,9 @@ assert_eq "1" "$json_drift_rc" "policy JSON preserves nonzero drift exit status"
 assert_true "policy JSON contains missing drift" grep -Fq 'MISSING phone -> remotebox' <<< "$json_drift"
 assert_true "policy JSON contains excess drift" grep -Fq 'EXCESS phone -> localbox' <<< "$json_drift"
 assert_true "policy JSON exposes issue count" grep -Fq '"issue_count":2' <<< "$json_drift"
+assert_true "policy JSON exposes structured findings" grep -Fq '"findings":[' <<< "$json_drift"
+assert_true "policy JSON uses a stable missing-policy code" grep -Fq '"code":"POLICY_MISSING"' <<< "$json_drift"
+assert_true "policy JSON uses a stable excess-policy code" grep -Fq '"code":"POLICY_EXCESS"' <<< "$json_drift"
 
 set +e
 audit_drift=$(audit_json)
@@ -83,6 +86,7 @@ audit_drift_rc=$?
 set -e
 assert_eq "1" "$audit_drift_rc" "audit JSON preserves nonzero trust exit status"
 assert_true "audit JSON contains desired-state drift" grep -Fq "EXCESS identity 'phone'" <<< "$audit_drift"
+assert_true "audit JSON emits stable structured policy codes" grep -Fq '"code":"POLICY_EXCESS"' <<< "$audit_drift"
 
 # Identity sync plans changes against the remote registry and refuses to orphan
 # remote policy. It intentionally never mirrors policy aliases.

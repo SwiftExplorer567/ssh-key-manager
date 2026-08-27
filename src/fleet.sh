@@ -331,39 +331,47 @@ json_escape() {
     printf '%s' "$value"
 }
 
-json_command_result() {
-    local command_name="$1" rc="$2" output="$3" line issue first=1 issue_count=0
-    local issues=""
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == "warn  "* || "$line" == "error "* ]]; then
-            if [[ "$line" =~ ^warn[[:space:]]+[0-9]+[[:space:]]+(trust|policy)[[:space:]] ]]; then
-                continue
-            fi
-            issue="${line#warn  }"
-            issue="${issue#error }"
-            if (( first == 0 )); then issues="$issues,"; fi
-            issues="$issues\"$(json_escape "$issue")\""
-            first=0
-            issue_count=$((issue_count + 1))
+json_findings_result() {
+    local command_name="$1" rc="$2" source="$3" i first=1
+    local -a codes messages
+    local issues="" findings=""
+    if [[ "$source" == "audit" ]]; then
+        codes=("${AUDIT_FINDING_CODES[@]}")
+        messages=("${AUDIT_FINDING_MESSAGES[@]}")
+    else
+        codes=("${POLICY_FINDING_CODES[@]}")
+        messages=("${POLICY_FINDING_MESSAGES[@]}")
+    fi
+    for i in "${!messages[@]}"; do
+        if (( first == 0 )); then
+            issues="$issues,"
+            findings="$findings,"
         fi
-    done <<< "$output"
-    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s]}\n' \
+        issues="$issues\"$(json_escape "${messages[$i]}")\""
+        findings="$findings{\"code\":\"$(json_escape "${codes[$i]}")\",\"severity\":\"warning\",\"message\":\"$(json_escape "${messages[$i]}")\"}"
+        first=0
+    done
+    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s],"findings":[%s]}\n' \
         "$(json_escape "$command_name")" "$(json_escape "$VERSION")" \
-        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues"
+        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "${#messages[@]}" "$issues" "$findings"
 }
 
 audit_json() {
-    local output rc=0
+    local tmp rc=0
     local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
-    output=$(audit 2>&1) || rc=$?
-    json_command_result audit "$rc" "$output"
+    tmp=$(mktemp "$CONFIG_DIR/audit-json.XXXXXX") || return 1
+    audit > "$tmp" 2>&1 || rc=$?
+    rm -f "$tmp"
+    json_findings_result audit "$rc" audit
     return "$rc"
 }
 
 policy_check_json() {
-    local output rc=0
+    local tmp rc=0
     local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
-    output=$(policy_check 2>&1) || rc=$?
-    json_command_result policy-check "$rc" "$output"
+    tmp=$(mktemp "$CONFIG_DIR/policy-json.XXXXXX") || return 1
+    policy_check > "$tmp" 2>&1 || rc=$?
+    rm -f "$tmp"
+    json_findings_result policy-check "$rc" policy
     return "$rc"
 }

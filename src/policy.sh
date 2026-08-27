@@ -188,10 +188,27 @@ policy_matrix() {
 }
 
 POLICY_DRIFT=0
+declare -a POLICY_FINDING_CODES POLICY_FINDING_MESSAGES
+
+policy_code_for_message() {
+    case "$1" in
+        "MISSING "*) printf 'POLICY_MISSING' ;;
+        "EXCESS "*) printf 'POLICY_EXCESS' ;;
+        *"desired-state check is incomplete"*) printf 'POLICY_INCOMPLETE' ;;
+        *"policy: unknown fingerprint"*) printf 'POLICY_UNKNOWN_IDENTITY' ;;
+        *"policy: unknown machine"*) printf 'POLICY_UNKNOWN_MACHINE' ;;
+        *"policy: retired identity"*) printf 'POLICY_RETIRED_EXPECTATION' ;;
+        *) printf 'POLICY_DRIFT' ;;
+    esac
+}
 
 policy_drift_issue() {
+    local message="$*" code
+    code=$(policy_code_for_message "$message")
     POLICY_DRIFT=$((POLICY_DRIFT + 1))
-    warn "$*"
+    POLICY_FINDING_CODES+=("$code")
+    POLICY_FINDING_MESSAGES+=("$message")
+    warn "$message"
 }
 
 policy_validate_rules() {
@@ -213,6 +230,8 @@ policy_validate_rules() {
 policy_check() {
     local i j expected observed host
     POLICY_DRIFT=0
+    POLICY_FINDING_CODES=()
+    POLICY_FINDING_MESSAGES=()
     load_identities
     load_policy
     (( ${#POLICY_FINGERPRINTS[@]} > 0 )) || { fail "No desired-state policy configured. Run: skm policy expect IDENTITY MACHINE"; return 1; }
