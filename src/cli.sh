@@ -28,6 +28,10 @@ Commands:
   skm host rename NAME NEW_NAME
   skm host remove NAME [--force]
   skm host test NAME
+  skm host fingerprint NAME          Show host-key fingerprints currently presented
+  skm host trust NAME [FINGERPRINT]  Pin scanned SSH host trust
+  skm host verify NAME               Verify the server still presents its pinned key
+  skm host untrust NAME              Remove the SKM host-key pin
   skm access grant NAME [KEY.pub]
   skm access receive NAME
   skm access link NAME [KEY.pub]
@@ -49,7 +53,7 @@ Commands:
   skm config export [PATH|-]         Export registry + policy (no private keys)
   skm config validate PATH|-         Validate a trust config before import
   skm config import PATH|-           Restore registry + policy with backups
-  skm sync identities MACHINE       Replace a remote canonical identity registry
+  skm sync identities MACHINE [--dry-run]  Plan or replace a remote identity registry
   skm key list                      Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
@@ -88,7 +92,11 @@ dispatch() {
                 rename) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm host rename NAME NEW_NAME"; host_rename "$2" "$3";;
                 remove) [[ -n "${2:-}" ]] || die "Usage: skm host remove NAME [--force]"; [[ -z "${3:-}" || "${3:-}" == "--force" ]] || die "Usage: skm host remove NAME [--force]"; host_remove "$2" "${3:-}";;
                 test) [[ -n "${2:-}" ]] || die "Usage: skm host test NAME"; host_test "$2";;
-                *) die "Usage: skm host {list|show|add|edit|rename|remove|test}";;
+                fingerprint) [[ -n "${2:-}" ]] || die "Usage: skm host fingerprint NAME"; host_fingerprint "$2";;
+                trust) [[ -n "${2:-}" ]] || die "Usage: skm host trust NAME [FINGERPRINT]"; host_trust "$2" "${3:-}";;
+                verify) [[ -n "${2:-}" ]] || die "Usage: skm host verify NAME"; host_verify "$2";;
+                untrust) [[ -n "${2:-}" ]] || die "Usage: skm host untrust NAME"; host_untrust "$2";;
+                *) die "Usage: skm host {list|show|add|edit|rename|remove|test|fingerprint|trust|verify|untrust}";;
             esac
             ;;
         access)
@@ -147,8 +155,12 @@ dispatch() {
         sync)
             shift
             case "${1:-}" in
-                identities) [[ -n "${2:-}" ]] || die "Usage: skm sync identities MACHINE"; sync_identities "$2";;
-                *) die "Usage: skm sync identities MACHINE";;
+                identities)
+                    [[ -n "${2:-}" ]] || die "Usage: skm sync identities MACHINE [--dry-run]"
+                    [[ -z "${3:-}" || "${3:-}" == "--dry-run" ]] || die "Usage: skm sync identities MACHINE [--dry-run]"
+                    sync_identities "$2" "${3:-}"
+                    ;;
+                *) die "Usage: skm sync identities MACHINE [--dry-run]";;
             esac
             ;;
         key)
