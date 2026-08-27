@@ -17,46 +17,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: feat/v1.5-security-hardening
-      - name: Patch explicit doctor checks
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('src/access.sh')
-          s = p.read_text()
-          old = '''    command -v ssh >/dev/null 2>&1 && ok "OpenSSH client: available" || { fail "OpenSSH client is missing."; issues=$((issues+1)); }
-    command -v ssh-keygen >/dev/null 2>&1 && ok "ssh-keygen: available" || { fail "ssh-keygen is missing."; issues=$((issues+1)); }
-    command -v curl >/dev/null 2>&1 && ok "curl: available for updates" || info "curl is unavailable; remote update checks/install will not work."
-'''
-          new = '''    if command -v ssh >/dev/null 2>&1; then
-        ok "OpenSSH client: available"
-    else
-        fail "OpenSSH client is missing."
-        issues=$((issues + 1))
-    fi
-    if command -v ssh-keygen >/dev/null 2>&1; then
-        ok "ssh-keygen: available"
-    else
-        fail "ssh-keygen is missing."
-        issues=$((issues + 1))
-    fi
-    if command -v curl >/dev/null 2>&1; then
-        ok "curl: available for updates"
-    else
-        info "curl is unavailable; remote update checks/install will not work."
-    fi
-'''
-          if s.count(old) != 1:
-              raise SystemExit('doctor command check block not found exactly once')
-          p.write_text(s.replace(old, new))
-
-          p = Path('tests/access_test.sh')
-          s = p.read_text()
-          s2 = s.replace('MANAGED_KEY="$SKM_MANAGED_KEY"\n', 'export MANAGED_KEY="$SKM_MANAGED_KEY"\n', 1)
-          s2 = s2.replace('MANAGED_KEY="$managed_original"\n', 'export MANAGED_KEY="$managed_original"\n', 1)
-          if s2 == s:
-              raise SystemExit('test MANAGED_KEY replacements did not apply')
-          p.write_text(s2)
-          PY
+      - name: Apply doctor lint patch
+        run: python3 .github/v1.5_doctor_lint_patch.py
       - name: Commit lint fix
         run: |
           git config user.name "github-actions[bot]"
