@@ -8,15 +8,17 @@ Manage the public keys and access grants on your machines. This is a key
 management tool; it does not open interactive SSH sessions.
 
 Private keys never move. Each machine owns a dedicated ED25519 key; only public
-keys are added to authorized_keys.
+keys are added to authorized_keys. Identity names are local metadata mapped to
+immutable SHA256 fingerprints.
 
 Start here:
   skm                              Open the beginner-friendly dashboard
 
 Common tasks:
   1. Add your servers from Machines.
-  2. Use Give Access for this device or paste a new client's public key.
-  3. Review every reachable machine under Keys & Security > Key inventory.
+  2. Register known fingerprints with `skm identity add`.
+  3. Use Give Access for this device or paste a new client's public key.
+  4. Review trust with `skm access matrix` and `skm audit`.
 
 Commands:
   skm host list
@@ -27,19 +29,28 @@ Commands:
   skm access receive NAME
   skm access link NAME [KEY.pub]
   skm access status [NAME]
-  skm access revoke NAME           Revoke a key that can enter NAME
-  skm access allow [KEY.pub|-]     Allow a public key into this machine
-  skm key list                     Public key inventory for all machines
+  skm access matrix                 Observed fingerprint authorization matrix
+  skm access revoke NAME            Revoke a key that can enter NAME
+  skm access allow [KEY.pub|-]      Allow a public key into this machine
+  skm identity list
+  skm identity add NAME FINGERPRINT [device|server|service|other]
+  skm identity show NAME
+  skm identity rename NAME NEW_NAME
+  skm identity retire NAME
+  skm identity activate NAME
+  skm key list                      Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
+  skm audit                         Audit trust, unknown/retired keys and hygiene
   skm doctor
   skm update check
   skm update install
   skm version
 
-Example — give this device access to a server:
-  skm host add storage admin 192.168.1.20
-  skm access grant storage
+Example — register and review a device:
+  skm identity add laptop SHA256:abc... device
+  skm access matrix
+  skm audit
 
 New client with no key:
   Run `skm key public` on the client, then paste the result into the dashboard's
@@ -70,9 +81,25 @@ dispatch() {
                 receive) [[ -n "${2:-}" ]] || die "Usage: skm access receive NAME"; access_receive "$2";;
                 link) [[ -n "${2:-}" ]] || die "Usage: skm access link NAME [KEY.pub]"; access_link "$2" "${3:-}";;
                 status) access_status "${2:-}";;
+                matrix) access_matrix;;
                 revoke) [[ -n "${2:-}" ]] || die "Usage: skm access revoke NAME"; access_revoke_remote "$2";;
                 allow) access_allow_local "${2:--}";;
-                *) die "Usage: skm access {grant|receive|link|status|revoke|allow}";;
+                *) die "Usage: skm access {grant|receive|link|status|matrix|revoke|allow}";;
+            esac
+            ;;
+        identity)
+            shift
+            case "${1:-}" in
+                list) identity_list;;
+                add)
+                    [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm identity add NAME FINGERPRINT [TYPE]"
+                    identity_add "$2" "$3" "${4:-device}"
+                    ;;
+                show) [[ -n "${2:-}" ]] || die "Usage: skm identity show NAME"; identity_show "$2";;
+                rename) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm identity rename NAME NEW_NAME"; identity_rename "$2" "$3";;
+                retire) [[ -n "${2:-}" ]] || die "Usage: skm identity retire NAME"; identity_retire "$2";;
+                activate) [[ -n "${2:-}" ]] || die "Usage: skm identity activate NAME"; identity_activate "$2";;
+                *) die "Usage: skm identity {list|add|show|rename|retire|activate}";;
             esac
             ;;
         key)
@@ -84,6 +111,7 @@ dispatch() {
                 *) die "Usage: skm key {list|generate|public}";;
             esac
             ;;
+        audit) audit ;;
         doctor) doctor ;;
         update)
             case "${2:-check}" in
