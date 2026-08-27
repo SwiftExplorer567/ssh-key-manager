@@ -1,0 +1,33 @@
+name: Feature v1.2 Build
+
+on:
+  push:
+    branches:
+      - feat/identity-registry-trust-audit
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Build generated executable
+        run: make build
+
+      - name: Run tests and syntax lint
+        run: make test && make lint
+
+      - name: Commit generated artifacts and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ssh-key-manager ssh-key-manager.sha256
+          git rm .github/workflows/feature-v12-build.yml
+          git commit -m "build: regenerate v1.2 executable"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
