@@ -1,203 +1,430 @@
-# SSH Key Manager v1
+# SSH Key Manager
 
-Public key management for humans. SKM keeps a clear inventory across your
-machines and lets you grant or revoke access without ever moving a private key.
-It deliberately does not open interactive SSH sessions.
+<p align="center">
+  <strong>Local-first SSH public-key trust management for small fleets.</strong>
+</p>
 
-## The mental model
+<p align="center">
+  <a href="https://github.com/SwiftExplorer567/ssh-key-manager/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/SwiftExplorer567/ssh-key-manager/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/SwiftExplorer567/ssh-key-manager/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/SwiftExplorer567/ssh-key-manager"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/SwiftExplorer567/ssh-key-manager"></a>
+  <img alt="Bash 3.2+" src="https://img.shields.io/badge/Bash-3.2%2B-4EAA25?logo=gnu-bash&logoColor=white">
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey">
+</p>
 
-An SSH connection always has a direction:
+SSH Key Manager (SKM) is a terminal application for understanding and managing
+SSH public-key trust across a small set of Linux and macOS machines. It combines
+an observed access inventory, fingerprint-based identities, desired-state
+policy, trust auditing, configuration backup/restore, fleet identity sync, and
+JSON output for automation.
+
+SKM deliberately **does not move or escrow private keys** and it does not open
+interactive SSH sessions. It manages public-key authorization and the metadata
+needed to reason about it.
+
+## Why SKM?
+
+`authorized_keys` is simple on one server. Across several machines, the hard
+part quickly becomes answering questions such as:
+
+- Which public key belongs to which device or service?
+- Where is that identity authorized right now?
+- Where *should* it be authorized?
+- Did a key disappear, appear somewhere unexpected, or remain after retirement?
+- Can I audit the fleet without building a central private-key store?
+
+SKM keeps those concerns separate and explicit.
+
+| Layer | Question it answers | Main commands |
+|---|---|---|
+| Machines | What can this SKM node manage? | `skm host ...` |
+| Observed access | Where is a fingerprint authorized now? | `skm access matrix` |
+| Identity registry | Who/what does this fingerprint represent? | `skm identity ...` |
+| Desired state | Where should that identity be authorized? | `skm policy ...` |
+| Audit | Is observed trust clean and consistent? | `skm audit` |
+| Fleet automation | Can I back up, sync, or script trust metadata? | `skm config ...`, `skm sync ...`, `--json` |
+
+## Security model
+
+The central rule is simple:
 
 ```text
-this machine  ── public key ──>  server authorized_keys
-this machine  ── signs in ────>  server
+private key stays on its owner
+          │
+          └── public key ──> destination authorized_keys
 ```
 
-| What you want | Where to do it | What changes |
-|---|---|---|
-| Let this device access `rpi5` | Dashboard → Give Access → This device | This device's public key is allowed on `rpi5` |
-| Let a new client access one server | Dashboard → Give Access → Another device | The pasted client public key is added to one destination |
-| Let a new client access every managed server | Dashboard → Give Access → Another device → All | The same client public key is added to each destination |
-| Review keys across the fleet | Keys & Security → Key inventory | Nothing; only public metadata is read |
+SKM never needs to centralize private keys. Each machine may own a dedicated
+`~/.ssh/id_ed25519_skm` keypair; only the public half is copied when access is
+granted.
 
-Each machine owns a dedicated `~/.ssh/id_ed25519_skm` keypair. The private half
-stays on that machine. Access is always granted by copying only a public key to
-a destination's `authorized_keys` file.
+```mermaid
+flowchart LR
+    A[Client or service keypair] -->|public key only| B[Server authorized_keys]
+    C[Identity registry\nfingerprint → canonical name] -. labels .-> B
+    D[Desired-state policy\nidentity → machine] -. expected state .-> E[Policy engine]
+    B -. observed state .-> E
+    E --> F[OK / MISSING / EXCESS]
+    E --> G[skm audit]
+```
 
-## Install
+Important security properties:
 
-Linux and macOS with Bash 3.2+ and OpenSSH are supported.
+- private keys are never transferred, exported, or escrowed by SKM;
+- inventory reads public-key material only (`*.pub` and `authorized_keys`);
+- public keys, fingerprints, host values, ports, and identity names are validated;
+- `authorized_keys` changes are locked, atomic, permissioned, and backed up;
+- symlinked authorization/config targets are rejected where replacement would be unsafe;
+- remote mutations use fixed embedded scripts rather than user-controlled shell commands;
+- public-key payloads travel over standard input instead of shell interpolation;
+- trust configuration exports contain identities and policy metadata, not private keys or `authorized_keys`;
+- there is no telemetry and updates are never installed silently;
+- update downloads are versioned, SHA-256 verified, syntax checked, and replaced atomically.
+
+For security reporting and project policy, see [SECURITY.md](SECURITY.md).
+
+## Requirements
+
+- Linux or macOS
+- Bash 3.2 or newer
+- OpenSSH client tools
+- `curl` for the installer/updater
+
+CI runs the generated artifact and test suite on both Ubuntu and macOS.
+
+## Installation
+
+Install the latest verified release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SwiftExplorer567/ssh-key-manager/main/install.sh | bash
 ```
 
-The installer uses `/usr/local/bin` when it is writable, otherwise
-`~/.local/bin`. Remote installs download the versioned release asset and its
-SHA-256 file, verify the checksum, and validate the script with `bash -n` before
-installation. To explicitly request a system install:
+The installer uses `/usr/local/bin` when writable and otherwise falls back to
+`~/.local/bin`. To explicitly request a system installation:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SwiftExplorer567/ssh-key-manager/main/install.sh | bash -s -- --system
 ```
 
-## Mac mini + Raspberry Pi quick start
-
-Install SKM on the Mac mini, open `skm`, then choose **Machines → Add a
-machine**. Enter a friendly name such as `rpi5`, its SSH user, IP address, and
-port. When asked, let SKM give the Mac mini access to the Pi. The Pi's login
-password may be requested once so its `authorized_keys` can be updated.
-
-The equivalent CLI commands are:
+Verify the installation:
 
 ```bash
-skm host add rpi5 homelab 192.168.1.20 22
+skm version
+skm doctor
+```
+
+Run `skm` with no arguments to open the interactive dashboard.
+
+## Quick start
+
+### 1. Add a machine
+
+```bash
+skm host add rpi5 root 192.168.1.20 22
+skm host test rpi5
+```
+
+### 2. Give this machine access
+
+```bash
 skm access grant rpi5
 ```
 
-SKM creates a dedicated ED25519 key on the Mac mini if needed and adds only its
-public half to the Pi. The private half stays on the Mac mini.
+If needed, SKM creates its dedicated ED25519 keypair locally and adds only the
+public key to the destination.
 
-## Give a new client access
-
-On the client device, run:
+### 3. Review observed authorization
 
 ```bash
-skm key public
+skm key list
+skm access matrix
 ```
 
-If the client has no SKM key, this creates one on that client and prints only
-the safe-to-share public line. On the Mac mini, choose **Give Access → Another
-device**, paste that line, and choose one destination or all saved machines.
-SKM does not copy or escrow the client's private key.
+The access matrix is observational:
 
-If password login is disabled and the manager cannot yet reach a server, install
-the public key through the server's console or provisioning system first.
+- `yes` — fingerprint is present in that machine's `authorized_keys`;
+- `no` — fingerprint is absent;
+- `?` — machine could not be inspected.
 
-## Interactive use
+`yes` does **not** mean the access is intended. Desired intent is modeled
+separately with policy.
 
-Run `skm` with no arguments to open the full-screen dashboard. Use arrow keys or
-`j`/`k` to move, Enter to select, number shortcuts for direct selection, and
-`q` to go back. The dashboard uses user goals, not SSH file jargon:
+### 4. Register canonical identities
 
-1. Give Access
-2. Machines
-3. Keys & Security
-4. Access Overview
-5. Updates
-
-Saved machines show `ready`, `unavailable`, or `this machine` status badges.
-The Key Inventory shows public identities and authorized public keys for the
-local device and every reachable saved machine. Unreachable machines are marked
-without blocking the rest of the inventory. The confirmation screen always
-displays the exact source and destination before changing access.
-
-## Updates
-
-SKM checks the latest GitHub release tag at most once every 24 hours and shows a
-dashboard badge when an update exists. Checks can be disabled from the Updates
-screen or with `AUTO_UPDATE_CHECK="false"` in the config file. Updates are never
-installed silently.
+Map known SHA-256 fingerprints to stable names:
 
 ```bash
-skm update check
-skm update install
+skm identity add workstation 'SHA256:...' device
+skm identity add phone 'SHA256:...' device
+skm identity add deploy-prod 'SHA256:...' service
 ```
 
-Installation downloads the versioned release executable and checksum over
-HTTPS, verifies SHA-256, confirms the embedded version and shebang, runs
-`bash -n`, preserves the current binary as `.previous`, and then replaces it
-atomically. System installs request `sudo` only after explicit update
-confirmation.
+Supported identity types are `device`, `server`, `service`, and `other`.
+Identity names are metadata; the immutable fingerprint anchors the identity, so
+renaming an identity does not break policy references.
 
-## Commands
+```bash
+skm identity list
+skm identity show workstation
+```
+
+### 5. Declare desired access
+
+```bash
+skm policy expect workstation rpi5
+skm policy expect phone rpi5
+```
+
+Then compare desired and observed state:
+
+```bash
+skm policy matrix
+skm policy check
+```
+
+Policy cells mean:
+
+- `OK` — expected and authorized;
+- `MISSING` — expected but not authorized;
+- `EXCESS` — authorized but not expected;
+- `-` — neither expected nor authorized;
+- `?` — the machine could not be inspected.
+
+An empty policy preserves observed-only behavior. Once at least one rule exists,
+policy is closed-world for registered **active** identities.
+
+### 6. Audit trust
+
+```bash
+skm audit
+```
+
+The audit checks desired-state drift together with trust/hygiene findings such
+as unknown authorized fingerprints, retired identities that still have access,
+duplicate key material, unsafe control characters in comments, broad
+`Host *`/`IdentityFile` SSH config patterns, and unreachable managed machines.
+
+Audit is read-only; SKM does not automatically grant or revoke access in
+response to a finding.
+
+## Fleet configuration and automation
+
+### Export and validate trust metadata
+
+```bash
+skm config export ~/skm-trust-backup.skm
+skm config validate ~/skm-trust-backup.skm
+```
+
+The export is a non-executable, versioned trust bundle containing the canonical
+identity registry and desired-state policy. It is written with mode `0600` and
+contains no private keys or `authorized_keys` contents.
+
+Restore after validation:
+
+```bash
+skm config import ~/skm-trust-backup.skm
+```
+
+Import validates the entire bundle before mutation, creates timestamped backups,
+and replaces identity/policy metadata atomically.
+
+### Synchronize canonical identities
+
+```bash
+skm sync identities "Mac Mini"
+```
+
+This replaces the remote SKM identity registry using the existing management SSH
+path. The remote registry is validated, backed up, and written with mode `0600`.
+
+**Policy is intentionally not synchronized.** Policy rules refer to machine
+aliases local to each SKM node, so blindly copying policy between managers could
+create false `MISSING`/`EXCESS` results.
+
+### JSON output
+
+For monitoring, cron/systemd jobs, CI, or other automation:
+
+```bash
+skm policy check --json
+skm audit --json
+```
+
+Example clean result:
+
+```json
+{"command":"audit","version":"1.4.0","ok":true,"exit_code":0,"issue_count":0,"issues":[]}
+```
+
+JSON mode preserves the same process exit status as the human-readable command,
+so drift or trust findings remain script-detectable.
+
+See [Fleet configuration & automation](docs/fleet-automation.md) for details.
+
+## Command reference
 
 ```text
+# Machines
 skm host list
 skm host add NAME USER HOST [PORT]
 skm host remove NAME
 skm host test NAME
 
+# Access
 skm access grant NAME [KEY.pub]
 skm access receive NAME
 skm access link NAME [KEY.pub]
 skm access status [NAME]
+skm access matrix
 skm access revoke NAME
 skm access allow [KEY.pub|-]
 
+# Canonical identities
+skm identity list
+skm identity add NAME FINGERPRINT [device|server|service|other]
+skm identity show NAME
+skm identity rename NAME NEW_NAME
+skm identity retire NAME
+skm identity activate NAME
+
+# Desired-state policy
+skm policy list
+skm policy expect IDENTITY MACHINE
+skm policy remove IDENTITY MACHINE
+skm policy matrix
+skm policy check [--json]
+
+# Trust config / fleet
+skm config export [PATH|-]
+skm config validate PATH|-
+skm config import PATH|-
+skm sync identities MACHINE
+
+# Public keys / audit
 skm key list
 skm key generate [PATH] [COMMENT]
 skm key public [KEY.pub]
+skm audit [--json]
 skm doctor
+
+# Updates
 skm update check
 skm update install
+skm version
 ```
 
-The old `give-access` and `get-access` language is intentionally rejected with a
-directional replacement message.
+## Interactive dashboard
 
-## Configuration and compatibility
+Run:
 
-Legacy host records remain compatible:
+```bash
+skm
+```
+
+The dashboard provides goal-oriented flows for:
+
+1. giving access;
+2. managing machines;
+3. reviewing keys and security;
+4. inspecting access state;
+5. installing updates.
+
+Saved machines show reachable/unavailable/local status without preventing the
+rest of the fleet from being inspected. Confirmation screens show the source and
+destination before access-changing actions.
+
+## Configuration files
+
+Default locations:
+
+| Path | Purpose |
+|---|---|
+| `~/.config/ssh-key-manager/servers.conf` | Saved machine inventory |
+| `~/.config/ssh-key-manager/identities.conf` | Canonical fingerprint registry (`0600`) |
+| `~/.config/ssh-key-manager/policy.conf` | Desired-state rules (`0600`) |
+| `~/.config/ssh-key-manager/config` | Allow-listed application settings |
+| `~/.config/ssh-key-manager/update.state` | Cached release-check state |
+| `~/.ssh/id_ed25519_skm` | Local SKM private key (`0600`) |
+| `~/.ssh/id_ed25519_skm.pub` | Local SKM public key |
+| `~/.ssh/authorized_keys.skm.bak` | Most recent pre-change authorization backup |
+
+Settings files are parsed as data and are not sourced as shell code.
+
+New hosts default to:
 
 ```text
-name|user|host|port
+StrictHostKeyChecking=accept-new
 ```
 
-Files:
-
-- `~/.config/ssh-key-manager/servers.conf` — saved machines
-- `~/.config/ssh-key-manager/config` — optional `BRAND`,
-  `STRICT_HOST_KEY_CHECKING`, and `AUTO_UPDATE_CHECK` settings
-- `~/.config/ssh-key-manager/update.state` — cached release check, refreshed at
-  most once every 24 hours
-- `~/.ssh/id_ed25519_skm` — local SKM private key (mode `0600`)
-- `~/.ssh/id_ed25519_skm.pub` — its public half
-- `~/.ssh/authorized_keys.skm.bak` — most recent pre-change backup
-
-Existing v2 host configuration is read without executing it. Settings are
-allow-listed; the config file is never sourced as shell code.
-
-## Security properties
-
-- private keys are never read for transfer and never leave their owner;
-- inventory reads only `*.pub` and `authorized_keys` public data;
-- only validated public key lines are accepted;
-- host, user, port, and machine names are validated before SSH use;
-- `authorized_keys` updates are locked, atomic, permissioned, and backed up;
-- symlinked `authorized_keys` files are rejected;
-- remote commands are fixed scripts and public keys travel over standard input,
-  not through shell interpolation;
-- there is no telemetry or silent update installation; the optional startup
-  request only checks the latest versioned GitHub release tag;
-- `skm doctor` checks permissions, symlinks, and legacy RSA/DSA grants.
-
-New hosts default to `StrictHostKeyChecking=accept-new`, which prevents changed
-host keys but trusts a first-seen key. For pre-provisioned `known_hosts`, set:
+This rejects changed host keys but trusts a first-seen key. Environments with
+pre-provisioned `known_hosts` can set:
 
 ```text
 STRICT_HOST_KEY_CHECKING="yes"
 ```
 
-## Architecture and development
+## Updates
 
-Development sources are separated by responsibility:
-
-- `src/runtime.sh` — environment, configuration, output, and validation;
-- `src/hosts.sh` — host persistence and host operations;
-- `src/ssh_transport.sh` — SSH invocation and remote transport;
-- `src/access.sh` — keys, grants, revocation, and security checks;
-- `src/updates.sh` — release discovery, checksum validation, and updates;
-- `src/ui.sh` — terminal UI and interactive flows;
-- `src/cli.sh` — help, command dispatch, and application entry point;
-- `remote/` — remote `authorized_keys` programs embedded at build time.
-
-`build/bundle.sh` combines these sources into the single distributable
-`ssh-key-manager` executable and its `ssh-key-manager.sha256` checksum. Both
-generated files are committed so direct install URLs remain available; CI
-rejects stale generated output.
+SKM checks the latest GitHub release at most once every 24 hours unless automatic
+checks are disabled. It never installs an update without an explicit command.
 
 ```bash
+skm update check
+skm update install
+```
+
+The updater downloads the versioned release executable and checksum over HTTPS,
+verifies SHA-256, confirms the embedded version/shebang, runs `bash -n`, keeps
+the previous binary as `.previous`, and replaces the executable atomically.
+
+## Project scope and non-goals
+
+SKM is intentionally small and auditable. It is:
+
+- a public-key inventory and authorization tool;
+- an identity/fingerprint registry;
+- a desired-state SSH trust checker;
+- a lightweight fleet audit and automation tool.
+
+It is **not**:
+
+- an SSH server or interactive SSH client;
+- a private-key vault or secrets manager;
+- an SSH certificate authority;
+- a replacement for host compromise detection or endpoint security;
+- a reason to skip normal SSH hardening, backups, and least-privilege design.
+
+## Architecture
+
+Source is split by responsibility and bundled into one distributable Bash
+executable:
+
+| Module | Responsibility |
+|---|---|
+| `src/runtime.sh` | Runtime paths, settings, validation, output |
+| `src/hosts.sh` | Machine persistence and host operations |
+| `src/ssh_transport.sh` | SSH transport primitives |
+| `src/access.sh` | Public-key inventory, grants, revocation |
+| `src/identities.sh` | Fingerprint identity registry |
+| `src/policy.sh` | Desired-state policy and drift engine |
+| `src/security_display.sh` | Safe rendering of untrusted key metadata |
+| `src/fleet.sh` | Export/import, sync, JSON automation |
+| `src/updates.sh` | Release discovery and verified updates |
+| `src/ui.sh` | Interactive terminal interface |
+| `src/cli.sh` | CLI help and dispatch |
+| `remote/` | Fixed remote mutation programs embedded at build time |
+
+`build/bundle.sh` produces the committed `ssh-key-manager` executable and
+`ssh-key-manager.sha256`. CI rejects stale generated output.
+
+## Development
+
+```bash
+git clone https://github.com/SwiftExplorer567/ssh-key-manager.git
+cd ssh-key-manager
+
 make build
 make check-generated
 make test
@@ -205,28 +432,48 @@ make lint
 make ci
 ```
 
-Tests are split by runtime/hosts, access, updates/install, UI/CLI, and
-uninstall/release behavior. They run with isolated temporary HOME/config/SSH
-directories and never touch the developer's real SSH files. CI runs generated
-artifact checks, the functional suite, syntax validation, and ShellCheck on
-Linux and macOS.
+Tests use isolated temporary HOME/config/SSH directories and do not touch the
+developer's real SSH configuration.
+
+CI validates the generated artifact, functional tests, Bash syntax, and
+ShellCheck on Ubuntu and macOS. Commit messages follow Conventional Commits.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
+## Release model
+
+Releases are published automatically from `main` when the source version has
+been intentionally bumped to a version that does not yet have a `vX.Y.Z` tag.
+The release workflow reruns the full verification suite, creates an annotated
+tag, and publishes the executable plus SHA-256 checksum.
+
+A merge that does not change the version is a no-op for release publication.
+This keeps documentation and maintenance commits from producing accidental
+releases.
+
+## Documentation
+
+- [Identity registry](docs/identity-registry.md)
+- [Desired-state SSH policy](docs/desired-state-policy.md)
+- [Fleet configuration & automation](docs/fleet-automation.md)
+- [v1.2 migration notes](docs/migration-v1.2.md)
 
 ## Uninstall
 
-The default uninstaller preserves both SSH keys and saved host configuration:
+The default uninstaller preserves SSH keys and saved machine configuration:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SwiftExplorer567/ssh-key-manager/main/uninstall.sh | bash -s -- --yes
 ```
 
-Add `--purge` to remove SKM's host configuration. `~/.ssh` is never removed.
-For an installation made with `install.sh --prefix DIR`, pass the same location
-to the uninstaller:
+Use `--purge` to remove SKM configuration. `~/.ssh` itself is never removed.
 
-```bash
-./uninstall.sh --yes --prefix DIR
-```
+## Contributing
+
+Bug reports and focused pull requests are welcome. Please read
+[CONTRIBUTING.md](CONTRIBUTING.md), avoid publishing sensitive SSH material in
+issues, and include tests for behavior changes.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT © contributors. See [LICENSE](LICENSE).

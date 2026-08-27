@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose a focused improvement to SSH Key Manager
+title: "feat: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SKM intentionally stays small and explicit. Please describe the trust-management problem first, then the proposed solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What is difficult or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed behavior
+      description: Describe the command, workflow, or behavior you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing SKM commands, SSH-native approaches, or simpler alternatives you considered.
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and compatibility impact
+      description: Does this affect private keys, authorized_keys, remote execution, config import/export, Bash 3.2 compatibility, or automation exit codes?
+    validations:
+      required: true

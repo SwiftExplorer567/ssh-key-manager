@@ -2,36 +2,104 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
-      - name: Verify
-        run: make ci
-
-      - name: Match tag and source version
+      - name: Detect release state
+        id: version
         shell: bash
-        run: |
-          source_version=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' ssh-key-manager | head -1)
-          tag_version="${GITHUB_REF_NAME#v}"
-          test -n "$source_version"
-          test "$tag_version" = "$source_version"
-
-      - name: Prepare checksummed release assets
-        run: sha256sum ssh-key-manager > ssh-key-manager.sha256
-
-      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" ssh-key-manager ssh-key-manager.sha256 --title "SSH Key Manager $GITHUB_REF_NAME" --generate-notes
+        run: |
+          set -euo pipefail
+
+          runtime_version=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' src/runtime.sh | head -1)
+          installer_version=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' install.sh | head -1)
+          bundle_version=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' ssh-key-manager | head -1)
+
+          [[ "$runtime_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$runtime_version" = "$installer_version"
+          test "$runtime_version" = "$bundle_version"
+
+          tag="v${runtime_version}"
+          tag_exists=false
+          release_exists=false
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tag_exists=true
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            release_exists=true
+          fi
+
+          publish=false
+          if [[ "$tag_exists" != "true" || "$release_exists" != "true" ]]; then
+            publish=true
+          fi
+
+          echo "version=${runtime_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=${tag_exists}" >> "$GITHUB_OUTPUT"
+          echo "release_exists=${release_exists}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$publish" == "true" ]]; then
+            echo "Release candidate: ${tag}"
+          else
+            echo "${tag} is already published; no release needed."
+          fi
+
+      - name: Check out existing tag for recovery
+        if: steps.version.outputs.publish == 'true' && steps.version.outputs.tag_exists == 'true'
+        shell: bash
+        run: git checkout "${{ steps.version.outputs.tag }}"
+
+      - name: Install ShellCheck
+        if: steps.version.outputs.publish == 'true'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Verify release candidate
+        if: steps.version.outputs.publish == 'true'
+        run: make ci
+
+      - name: Prepare checksummed release assets
+        if: steps.version.outputs.publish == 'true'
+        run: sha256sum ssh-key-manager > ssh-key-manager.sha256
+
+      - name: Create annotated tag
+        if: steps.version.outputs.publish == 'true' && steps.version.outputs.tag_exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" "$GITHUB_SHA" -m "SSH Key Manager ${{ steps.version.outputs.tag }}"
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Publish GitHub release
+        if: steps.version.outputs.publish == 'true' && steps.version.outputs.release_exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            ssh-key-manager ssh-key-manager.sha256 \
+            --verify-tag \
+            --title "SSH Key Manager ${{ steps.version.outputs.tag }}" \
+            --generate-notes

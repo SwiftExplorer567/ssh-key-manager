@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security policy
+    url: https://github.com/SwiftExplorer567/ssh-key-manager/security/policy
+    about: Please use the security policy for vulnerability reports instead of a public issue.
