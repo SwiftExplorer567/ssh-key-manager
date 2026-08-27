@@ -136,7 +136,7 @@ identity_rename() {
     load_identities
     index=$(identity_index "$name") || { fail "Unknown identity '$name'."; return 1; }
     if identity_index "$new_name" >/dev/null 2>&1; then fail "Identity '$new_name' already exists."; return 1; fi
-    IDENTITY_NAMES[$index]="$new_name"
+    IDENTITY_NAMES[index]="$new_name"
     save_identities || { fail "Could not save identity registry."; return 1; }
     ok "Renamed $name to $new_name."
 }
@@ -146,7 +146,7 @@ identity_set_status() {
     valid_identity_status "$status" || return 1
     load_identities
     index=$(identity_index "$name") || { fail "Unknown identity '$name'."; return 1; }
-    IDENTITY_STATUSES[$index]="$status"
+    IDENTITY_STATUSES[index]="$status"
     save_identities || { fail "Could not save identity registry."; return 1; }
     ok "Identity $name is now $status."
 }
