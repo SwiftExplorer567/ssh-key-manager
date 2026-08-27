@@ -123,4 +123,13 @@ assert_false "identity sync refuses registry changes that would orphan remote po
 assert_eq "$before_remote_registry" "$(cat "$remote_registry")" "refused sync leaves the remote registry unchanged"
 identity_activate phone >/dev/null
 
+retention_base="$TEST_ROOT/retention"
+for n in 1 2 3 4; do
+    : > "$retention_base.pre-test-$n"
+    sleep 1
+ done
+prune_backups "$retention_base" 2
+retention_count=$(find "$TEST_ROOT" -maxdepth 1 -type f -name 'retention.pre-*' | wc -l | tr -d '[:space:]')
+assert_eq "2" "$retention_count" "backup retention keeps only the configured newest backups"
+
 finish_tests

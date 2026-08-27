@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2034,SC2024 # sourced SKM globals and runner-owned log redirect are intentional
 
 set -o errexit
 set -o nounset
@@ -24,7 +25,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 chmod 755 "$tmp"
 
-user=$(id -un)
+user=root
 port=$(python3 - <<'PY'
 import socket
 s = socket.socket()
@@ -40,6 +41,8 @@ ssh-keygen -q -t ed25519 -N '' -f "$tmp/decoy"
 cp "$tmp/decoy.pub" "$tmp/authorized_keys"
 chmod 644 "$tmp/authorized_keys"
 
+sudo mkdir -p /run/sshd
+
 cat > "$tmp/sshd_config" <<EOF
 Port $port
 ListenAddress 127.0.0.1
@@ -50,7 +53,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
-PermitRootLogin no
+PermitRootLogin prohibit-password
 UsePAM no
 StrictModes no
 LogLevel ERROR
@@ -61,7 +64,7 @@ sudo "$SSHD_BIN" -D -e -f "$tmp/sshd_config" > "$tmp/sshd.log" 2>&1 &
 sshd_pid=$!
 
 ready=0
-for _ in $(seq 1 30); do
+for _ in {1..30}; do
     if ssh -i "$tmp/decoy" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=1 -p "$port" "$user@127.0.0.1" true >/dev/null 2>&1; then
         ready=1

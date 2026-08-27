@@ -1,7 +1,8 @@
 # Fleet configuration and automation
 
-SSH Key Manager 1.4 adds safe configuration portability and script-friendly
-trust checks on top of the v1.2 identity registry and v1.3 desired-state policy.
+SSH Key Manager 1.4 introduced safe configuration portability and script-friendly
+trust checks. Version 1.5 hardens that model with sync planning, remote-policy
+preflight, bounded backup retention, and structured finding codes.
 
 ## Design boundary
 
@@ -75,22 +76,25 @@ key by itself.
 
 ## Synchronize identities to another SKM node
 
-For nodes that should share the same canonical fingerprint registry:
+For nodes that should share the same canonical fingerprint registry, plan first:
 
 ```bash
+skm sync identities "Mac Mini" --dry-run
 skm sync identities "Mac Mini"
 ```
 
 The command:
 
 1. validates and serializes the current identity registry;
-2. connects to the saved remote machine using SKM's existing management SSH key;
-3. validates the payload again on the remote machine;
-4. backs up the remote identity registry;
-5. atomically replaces the remote registry with mode `0600`.
+2. connects using the saved management path and `IdentitiesOnly=yes` when the managed key exists;
+3. reads and validates the remote identity registry and desired-state policy;
+4. prints `ADD`, `UPDATE`, `REMOVE`, and `UNCHANGED` changes;
+5. refuses the apply if the incoming registry would orphan or retire an identity still referenced by remote policy;
+6. backs up the remote identity registry and atomically replaces it with mode `0600`.
 
 An empty local registry is never pushed. Symlinked remote registries are refused.
-Policy is intentionally left untouched.
+Policy is intentionally left untouched. Timestamped metadata backups retain the
+newest five copies by default; `SKM_BACKUP_RETENTION` can change that local limit.
 
 Remote sync uses the normal SKM config location on the target:
 
@@ -114,18 +118,19 @@ skm audit --json
 Example success:
 
 ```json
-{"command":"policy-check","version":"1.4.0","ok":true,"exit_code":0,"issue_count":0,"issues":[]}
+{"command":"policy-check","version":"1.5.0","ok":true,"exit_code":0,"issue_count":0,"issues":[],"findings":[]}
 ```
 
 Example drift:
 
 ```json
-{"command":"policy-check","version":"1.4.0","ok":false,"exit_code":1,"issue_count":2,"issues":["MISSING phone -> server-b","EXCESS phone -> server-a"]}
+{"command":"policy-check","version":"1.5.0","ok":false,"exit_code":1,"issue_count":2,"issues":["MISSING phone -> server-b","EXCESS phone -> server-a"],"findings":[{"code":"POLICY_MISSING","severity":"warning","message":"MISSING phone -> server-b"},{"code":"POLICY_EXCESS","severity":"warning","message":"EXCESS phone -> server-a"}]}
 ```
 
+The legacy `issues` strings remain for compatibility, while `findings` adds
+stable machine-readable codes such as `POLICY_MISSING` and `POLICY_EXCESS`.
 These commands are suitable for cron, systemd timers, CI jobs, monitoring hooks,
-or other automation that needs a stable success/failure signal without parsing
-the human table output.
+or other automation without parsing human terminal output.
 
 ## Recommended authoritative-node workflow
 

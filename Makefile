@@ -2,7 +2,7 @@
 
 MODULE_SOURCES := $(wildcard src/*.sh) $(wildcard remote/*.sh)
 BUILD_SOURCES := build/bundle.sh build/lint.sh
-TEST_SOURCES := tests/test.sh tests/helpers/test_helper.sh $(wildcard tests/*_test.sh)
+TEST_SOURCES := tests/test.sh tests/helpers/test_helper.sh $(wildcard tests/*_test.sh) $(wildcard tests/integration/*.sh)
 
 build:
 	./build/bundle.sh

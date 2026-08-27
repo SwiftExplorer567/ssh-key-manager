@@ -50,5 +50,10 @@ targets=(
 for path in "$ROOT"/tests/*_test.sh; do
     targets+=("$path")
 done
+if [[ -d "$ROOT/tests/integration" ]]; then
+    for path in "$ROOT"/tests/integration/*.sh; do
+        [[ -e "$path" ]] && targets+=("$path")
+    done
+fi
 
 shellcheck "${targets[@]}"
