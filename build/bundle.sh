@@ -25,10 +25,12 @@ append_module() {
     printf '\n# --- embedded remote programs ---\n'
     printf 'REMOTE_ADD_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_add.sh")"
     printf 'REMOTE_REMOVE_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_remove.sh")"
+    printf 'REMOTE_IDENTITIES_SYNC_SCRIPT=%q\n' "$(<"$ROOT/remote/identities_replace.sh")"
     append_module "$ROOT/src/access.sh"
     append_module "$ROOT/src/identities.sh"
     append_module "$ROOT/src/policy.sh"
     append_module "$ROOT/src/security_display.sh"
+    append_module "$ROOT/src/fleet.sh"
     append_module "$ROOT/src/updates.sh"
     append_module "$ROOT/src/cli.sh"
 } > "$TMP_FILE"

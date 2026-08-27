@@ -20,10 +20,12 @@ append_module() {
     append_module "$ROOT/src/ssh_transport.sh"
     printf '\nREMOTE_ADD_SCRIPT=""\n'
     printf 'REMOTE_REMOVE_SCRIPT=""\n'
+    printf 'REMOTE_IDENTITIES_SYNC_SCRIPT=""\n'
     append_module "$ROOT/src/access.sh"
     append_module "$ROOT/src/identities.sh"
     append_module "$ROOT/src/policy.sh"
     append_module "$ROOT/src/security_display.sh"
+    append_module "$ROOT/src/fleet.sh"
     append_module "$ROOT/src/updates.sh"
     append_module "$ROOT/src/cli.sh"
 } > "$LINT_BUNDLE"
@@ -37,6 +39,7 @@ targets=(
     "$ROOT/build/lint.sh"
     "$ROOT/remote/authorized_add.sh"
     "$ROOT/remote/authorized_remove.sh"
+    "$ROOT/remote/identities_replace.sh"
     "$ROOT/tests/test.sh"
     "$ROOT/tests/helpers/test_helper.sh"
 )

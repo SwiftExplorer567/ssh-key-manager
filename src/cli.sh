@@ -42,11 +42,15 @@ Commands:
   skm policy expect IDENTITY MACHINE  Declare expected authorization
   skm policy remove IDENTITY MACHINE  Remove an expectation (does not revoke)
   skm policy matrix                  Compare desired and observed authorization
-  skm policy check                   Exit nonzero on MISSING/EXCESS policy drift
+  skm policy check [--json]          Exit nonzero on MISSING/EXCESS policy drift
+  skm config export [PATH|-]         Export registry + policy (no private keys)
+  skm config validate PATH|-         Validate a trust config before import
+  skm config import PATH|-           Restore registry + policy with backups
+  skm sync identities MACHINE       Replace a remote canonical identity registry
   skm key list                      Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
-  skm audit                         Audit trust, unknown/retired keys and hygiene
+  skm audit [--json]                Audit trust; JSON mode preserves exit status
   skm doctor
   skm update check
   skm update install
@@ -116,8 +120,29 @@ dispatch() {
                 expect) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm policy expect IDENTITY MACHINE"; policy_expect "$2" "$3";;
                 remove) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm policy remove IDENTITY MACHINE"; policy_remove "$2" "$3";;
                 matrix) policy_matrix;;
-                check) policy_check;;
+                check)
+                    if [[ "${2:-}" == "--json" ]]; then policy_check_json
+                    elif [[ -z "${2:-}" ]]; then policy_check
+                    else die "Usage: skm policy check [--json]"
+                    fi
+                    ;;
                 *) die "Usage: skm policy {list|expect|remove|matrix|check}";;
+            esac
+            ;;
+        config)
+            shift
+            case "${1:-}" in
+                export) config_export "${2:--}";;
+                validate) [[ -n "${2:-}" ]] || die "Usage: skm config validate PATH|-"; config_validate "$2";;
+                import) [[ -n "${2:-}" ]] || die "Usage: skm config import PATH|-"; config_import "$2";;
+                *) die "Usage: skm config {export|validate|import}";;
+            esac
+            ;;
+        sync)
+            shift
+            case "${1:-}" in
+                identities) [[ -n "${2:-}" ]] || die "Usage: skm sync identities MACHINE"; sync_identities "$2";;
+                *) die "Usage: skm sync identities MACHINE";;
             esac
             ;;
         key)
@@ -129,7 +154,12 @@ dispatch() {
                 *) die "Usage: skm key {list|generate|public}";;
             esac
             ;;
-        audit) audit ;;
+        audit)
+            if [[ "${2:-}" == "--json" ]]; then audit_json
+            elif [[ -z "${2:-}" ]]; then audit
+            else die "Usage: skm audit [--json]"
+            fi
+            ;;
         doctor) doctor ;;
         update)
             case "${2:-check}" in
