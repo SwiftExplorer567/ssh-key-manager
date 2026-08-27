@@ -439,9 +439,23 @@ doctor() {
     local issues=0 mode line type i pinned=0 unpinned=0
     say "$APP_NAME trust health check"
 
-    command -v ssh >/dev/null 2>&1 && ok "OpenSSH client: available" || { fail "OpenSSH client is missing."; issues=$((issues+1)); }
-    command -v ssh-keygen >/dev/null 2>&1 && ok "ssh-keygen: available" || { fail "ssh-keygen is missing."; issues=$((issues+1)); }
-    command -v curl >/dev/null 2>&1 && ok "curl: available for updates" || info "curl is unavailable; remote update checks/install will not work."
+    if command -v ssh >/dev/null 2>&1; then
+        ok "OpenSSH client: available"
+    else
+        fail "OpenSSH client is missing."
+        issues=$((issues + 1))
+    fi
+    if command -v ssh-keygen >/dev/null 2>&1; then
+        ok "ssh-keygen: available"
+    else
+        fail "ssh-keygen is missing."
+        issues=$((issues + 1))
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        ok "curl: available for updates"
+    else
+        info "curl is unavailable; remote update checks/install will not work."
+    fi
 
     if [[ -d "$CONFIG_DIR" ]]; then
         mode=$(file_mode "$CONFIG_DIR" 2>/dev/null || true)
