@@ -30,10 +30,8 @@ p.write_text(s.replace(old, new))
 
 p = Path('tests/access_test.sh')
 s = p.read_text()
-old1 = 'MANAGED_KEY="$SKM_MANAGED_KEY"\n'
-old2 = 'MANAGED_KEY="$managed_original"\n'
-if s.count(old1) != 1 or s.count(old2) != 1:
-    raise SystemExit('MANAGED_KEY test assignment count mismatch')
-s = s.replace(old1, 'export MANAGED_KEY="$SKM_MANAGED_KEY"\n', 1)
-s = s.replace(old2, 'export MANAGED_KEY="$managed_original"\n', 1)
-p.write_text(s)
+old = '# shellcheck disable=SC1090,SC1091\n'
+new = '# shellcheck disable=SC1090,SC1091,SC2034 # sourced SKM functions consume global MANAGED_KEY\n'
+if s.count(old) != 1:
+    raise SystemExit('access test shellcheck directive not found exactly once')
+p.write_text(s.replace(old, new))
