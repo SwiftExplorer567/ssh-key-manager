@@ -22,8 +22,11 @@ Common tasks:
 
 Commands:
   skm host list
+  skm host show NAME
   skm host add NAME USER HOST [PORT]
-  skm host remove NAME
+  skm host edit NAME USER HOST [PORT]
+  skm host rename NAME NEW_NAME
+  skm host remove NAME [--force]
   skm host test NAME
   skm access grant NAME [KEY.pub]
   skm access receive NAME
@@ -79,10 +82,13 @@ dispatch() {
             shift
             case "${1:-}" in
                 list) host_list;;
+                show) [[ -n "${2:-}" ]] || die "Usage: skm host show NAME"; host_show "$2";;
                 add) shift; host_add "${1:-}" "${2:-}" "${3:-}" "${4:-22}";;
-                remove) [[ -n "${2:-}" ]] || die "Usage: skm host remove NAME"; host_remove "$2";;
+                edit) [[ -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]] || die "Usage: skm host edit NAME USER HOST [PORT]"; host_edit "$2" "$3" "$4" "${5:-22}";;
+                rename) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm host rename NAME NEW_NAME"; host_rename "$2" "$3";;
+                remove) [[ -n "${2:-}" ]] || die "Usage: skm host remove NAME [--force]"; [[ -z "${3:-}" || "${3:-}" == "--force" ]] || die "Usage: skm host remove NAME [--force]"; host_remove "$2" "${3:-}";;
                 test) [[ -n "${2:-}" ]] || die "Usage: skm host test NAME"; host_test "$2";;
-                *) die "Usage: skm host {list|add|remove|test}";;
+                *) die "Usage: skm host {list|show|add|edit|rename|remove|test}";;
             esac
             ;;
         access)

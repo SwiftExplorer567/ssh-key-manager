@@ -4,6 +4,8 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/helpers/test_helper.sh"
 
 duplicate_host_fails() { (host_add "storage" "admin" "host.example" "22" >/dev/null 2>&1); }
+duplicate_local_fails() { (host_add "local-two" "admin" "localhost" "22" >/dev/null 2>&1); }
+remove_policy_host_without_force_fails() { (host_remove "storage-renamed" >/dev/null 2>&1); }
 
 ensure_runtime
 load_hosts
@@ -17,12 +19,36 @@ assert_false "port zero is rejected" valid_port "0"
 assert_false "ports over 65535 are rejected" valid_port "65536"
 
 host_add "storage" "admin" "192.168.1.20" "2222" >/dev/null
+host_add "local-one" "admin" "local" "22" >/dev/null
 load_hosts
-assert_eq "1" "${#HOST_NAMES[@]}" "saved machine reloads"
+assert_eq "2" "${#HOST_NAMES[@]}" "saved machines reload"
 assert_eq "storage" "${HOST_NAMES[0]}" "machine name is preserved"
 assert_eq "2222" "${HOST_PORTS[0]}" "machine port is preserved"
 assert_eq "600" "$(file_mode "$HOSTS_FILE")" "host configuration is private"
 assert_false "duplicate machine names fail" duplicate_host_fails
+assert_false "multiple aliases cannot represent the same local SKM node" duplicate_local_fails
+
+host_edit "storage" "ops" "storage.example" "2200" >/dev/null
+load_hosts
+assert_eq "ops" "${HOST_USERS[0]}" "machine user can be edited"
+assert_eq "storage.example" "${HOST_ADDRS[0]}" "machine address can be edited"
+assert_eq "2200" "${HOST_PORTS[0]}" "machine port can be edited"
+
+key_path=$(ensure_managed_key)
+fingerprint=$(key_fingerprint "$(read_public_key_file "$key_path")")
+identity_add "test-client" "$fingerprint" device >/dev/null
+policy_expect "test-client" "storage" >/dev/null
+host_rename "storage" "storage-renamed" >/dev/null
+load_hosts
+load_policy
+assert_eq "storage-renamed" "${HOST_NAMES[0]}" "machine aliases can be renamed"
+assert_eq "storage-renamed" "${POLICY_HOSTS[0]}" "machine rename migrates policy references"
+assert_false "policy-referenced machines cannot be removed accidentally" remove_policy_host_without_force_fails
+host_remove "storage-renamed" --force >/dev/null
+load_hosts
+load_policy
+assert_eq "1" "${#HOST_NAMES[@]}" "forced machine removal removes the machine"
+assert_eq "0" "${#POLICY_HOSTS[@]}" "forced machine removal also removes stale policy references"
 
 config_attack_marker="$TEST_ROOT/config-must-not-execute"
 printf '%s\n' 'BRAND="My Lab"' "touch $config_attack_marker" > "$SKM_SETTINGS_FILE"
