@@ -294,11 +294,18 @@ audit() {
     local i auth label
     AUDIT_ISSUES=0
     load_identities
+    load_policy
     say "SSH trust audit"
     if (( ${#IDENTITY_NAMES[@]} == 0 )); then
         info "Identity registry is empty; unknown-key checks are skipped."
     else
         ok "Loaded ${#IDENTITY_NAMES[@]} registered identity/identities."
+    fi
+    if (( ${#POLICY_FINGERPRINTS[@]} == 0 )); then
+        info "Desired-state policy is empty; policy drift checks are skipped."
+    else
+        ok "Loaded ${#POLICY_FINGERPRINTS[@]} desired access rule(s)."
+        policy_audit_rules
     fi
 
     label="this machine"
@@ -308,6 +315,7 @@ audit() {
     auth=""
     [[ -f "$AUTHORIZED_KEYS" && ! -L "$AUTHORIZED_KEYS" ]] && auth=$(cat "$AUTHORIZED_KEYS")
     audit_authorized_lines "$label" "$auth"
+    (( ${#POLICY_FINGERPRINTS[@]} == 0 )) || policy_audit_host "$label" "$auth"
     audit_local_key_files
     audit_ssh_config
 
@@ -315,6 +323,7 @@ audit() {
         is_local_host "$i" && continue
         if auth=$(remote_authorized_keys "$i" 2>/dev/null); then
             audit_authorized_lines "${HOST_NAMES[$i]}" "$auth"
+            (( ${#POLICY_FINGERPRINTS[@]} == 0 )) || policy_audit_host "${HOST_NAMES[$i]}" "$auth"
         else
             audit_issue "${HOST_NAMES[$i]}: authorized_keys could not be read; audit is incomplete."
         fi

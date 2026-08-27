@@ -27,6 +27,7 @@ append_module() {
     printf 'REMOTE_REMOVE_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_remove.sh")"
     append_module "$ROOT/src/access.sh"
     append_module "$ROOT/src/identities.sh"
+    append_module "$ROOT/src/policy.sh"
     append_module "$ROOT/src/security_display.sh"
     append_module "$ROOT/src/updates.sh"
     append_module "$ROOT/src/cli.sh"
