@@ -22,7 +22,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck openssh-server
       - name: Apply final v1.5 release patch
         run: python3 .github/v1.5_finalize.py
-      - name: Document integration-test lint boundaries
+      - name: Harden integration-test harness
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -33,7 +33,14 @@ jobs:
           if note not in text:
               if text.count(marker) != 1:
                   raise SystemExit('integration shebang not found exactly once')
-              p.write_text(text.replace(marker, marker + note, 1))
+              text = text.replace(marker, marker + note, 1)
+          if text.count('user=$(id -un)\n') != 1:
+              raise SystemExit('integration user assignment not found exactly once')
+          text = text.replace('user=$(id -un)\n', 'user=root\n', 1)
+          if text.count('PermitRootLogin no\n') != 1:
+              raise SystemExit('PermitRootLogin setting not found exactly once')
+          text = text.replace('PermitRootLogin no\n', 'PermitRootLogin prohibit-password\n', 1)
+          p.write_text(text)
           PY
       - name: Generate distributable
         run: make build
