@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible problem in SSH Key Manager
+title: "bug: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include private keys, passwords, tokens, or sensitive production SSH data. For undisclosed security vulnerabilities, use SECURITY.md instead of a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: SKM version
+      description: Output of `skm version`.
+      placeholder: "1.4.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: OS and version, including whether this is Linux or macOS.
+      placeholder: "Ubuntu 24.04 / macOS 15.x"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest safe sequence of commands or actions that reproduces the issue.
+      placeholder: |
+        1. Run ...
+        2. Add ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste sanitized logs/output. Redact addresses or metadata if they are sensitive.
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that may help, including whether the issue occurs on multiple machines.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed private keys, passwords, tokens, and unrelated secrets from this report.
+          required: true
+        - label: This is not an undisclosed security vulnerability.
+          required: true
