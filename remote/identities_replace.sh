@@ -4,6 +4,8 @@ umask 077
 
 config_dir="${SKM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ssh-key-manager}"
 target="$config_dir/identities.conf"
+retention="${SKM_BACKUP_RETENTION:-5}"
+case "$retention" in ''|*[!0-9]*) retention=5 ;; esac
 mkdir -p "$config_dir"
 chmod 700 "$config_dir" 2>/dev/null || true
 
@@ -43,4 +45,11 @@ mv -f "$tmp" "$target"
 chmod 600 "$target"
 trap - EXIT HUP INT TERM
 count=$(wc -l < "$target" | tr -d ' ')
+
+n=0
+for old in $(ls -1t "$target".pre-sync-* 2>/dev/null || true); do
+    n=$((n + 1))
+    [ "$n" -le "$retention" ] || rm -f -- "$old"
+done
+
 printf 'SYNCED %s\n' "$count"

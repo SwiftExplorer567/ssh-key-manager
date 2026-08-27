@@ -84,10 +84,10 @@ set -e
 assert_eq "1" "$audit_drift_rc" "audit JSON preserves nonzero trust exit status"
 assert_true "audit JSON contains desired-state drift" grep -Fq "EXCESS identity 'phone'" <<< "$audit_drift"
 
-# Identity sync replaces only the remote registry. It intentionally does not
-# mirror policy because machine aliases are local to each SKM installation.
+# Identity sync plans changes against the remote registry and refuses to orphan
+# remote policy. It intentionally never mirrors policy aliases.
 remote_home="$TEST_ROOT/remote-home"
-mkdir -p "$remote_home"
+mkdir -p "$remote_home/.config/ssh-key-manager"
 ssh_run_batch() {
     local index="$1"; shift
     local script="$1"
@@ -99,6 +99,10 @@ ssh_run_batch() {
     )
 }
 
+sync_dry_run=$(sync_identities remotebox --dry-run)
+assert_true "identity sync dry-run reports additions" grep -Fq 'ADD' <<< "$sync_dry_run"
+assert_false "identity sync dry-run does not create a remote registry" test -e "$remote_home/.config/ssh-key-manager/identities.conf"
+
 sync_output=$(sync_identities remotebox)
 remote_registry="$remote_home/.config/ssh-key-manager/identities.conf"
 assert_true "identity sync reports success" grep -Fq 'Synced 2 identities' <<< "$sync_output"
@@ -106,5 +110,13 @@ assert_true "identity sync creates remote registry" test -f "$remote_registry"
 assert_eq "600" "$(file_mode "$remote_registry")" "synced remote registry is private"
 assert_true "identity sync preserves canonical fingerprint mapping" grep -Fq "primary|$primary_fp|device|active" "$remote_registry"
 assert_false "identity sync does not create a remote policy" test -e "$remote_home/.config/ssh-key-manager/policy.conf"
+
+printf '%s|remote-only-host\n' "$phone_fp" > "$remote_home/.config/ssh-key-manager/policy.conf"
+identity_retire phone >/dev/null
+before_remote_registry=$(cat "$remote_registry")
+assert_false "identity sync dry-run reports remote policy impact" sync_identities remotebox --dry-run >/dev/null 2>&1
+assert_false "identity sync refuses registry changes that would orphan remote policy" sync_identities remotebox >/dev/null 2>&1
+assert_eq "$before_remote_registry" "$(cat "$remote_registry")" "refused sync leaves the remote registry unchanged"
+identity_activate phone >/dev/null
 
 finish_tests

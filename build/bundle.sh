@@ -27,6 +27,7 @@ append_module() {
     printf 'REMOTE_ADD_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_add.sh")"
     printf 'REMOTE_REMOVE_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_remove.sh")"
     printf 'REMOTE_IDENTITIES_SYNC_SCRIPT=%q\n' "$(<"$ROOT/remote/identities_replace.sh")"
+    printf 'REMOTE_TRUST_STATE_SCRIPT=%q\n' "$(<"$ROOT/remote/trust_state.sh")"
     append_module "$ROOT/src/access.sh"
     append_module "$ROOT/src/identities.sh"
     append_module "$ROOT/src/policy.sh"
