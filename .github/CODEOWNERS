@@ -1,0 +1,12 @@
+# Default maintainer
+* @SwiftExplorer567
+
+# Security- and release-sensitive areas
+/.github/workflows/ @SwiftExplorer567
+/remote/ @SwiftExplorer567
+/src/ssh_transport.sh @SwiftExplorer567
+/src/access.sh @SwiftExplorer567
+/src/fleet.sh @SwiftExplorer567
+/install.sh @SwiftExplorer567
+/release.sh @SwiftExplorer567
+/SECURITY.md @SwiftExplorer567
