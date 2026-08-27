@@ -32,6 +32,7 @@ original_path="$PATH"
 export PATH="$fake_bin:$PATH"
 ssh_run_batch 0 true
 assert_true "managed identity is used for passwordless checks" grep -Fxq "$SKM_MANAGED_KEY" "$ssh_capture"
+assert_true "managed identity is the only identity offered for passwordless checks" grep -Fxq "IdentitiesOnly=yes" "$ssh_capture"
 export PATH="$original_path"
 
 public_key=$(read_public_key_file "$key_path")
