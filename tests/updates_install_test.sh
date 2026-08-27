@@ -49,10 +49,24 @@ INSTALL_SOURCE="$ROOT/ssh-key-manager" PATH="$install_fake_bin:$original_path" H
     bash -u -s -- --prefix "$install_prefix" < "$ROOT/install.sh" >/dev/null
 assert_eq "$VERSION" "$(HOME="$TEST_ROOT/installer-home" SKM_TESTING=0 "$install_prefix/skm" version)" "piped installer works with nounset enabled"
 
-fallback_prefix="$TEST_ROOT/fallback-install/bin"
-INSTALL_SOURCE="$ROOT/ssh-key-manager" FAIL_RELEASE_ASSETS=1 PATH="$install_fake_bin:$original_path" HOME="$TEST_ROOT/fallback-installer-home" \
-    bash -u -s -- --prefix "$fallback_prefix" < "$ROOT/install.sh" >/dev/null
-assert_eq "$VERSION" "$(HOME="$TEST_ROOT/fallback-installer-home" SKM_TESTING=0 "$fallback_prefix/skm" version)" "installer falls back to the checksummed main artifact"
+missing_release_prefix="$TEST_ROOT/missing-release/bin"
+missing_release_install_fails() {
+    INSTALL_SOURCE="$ROOT/ssh-key-manager" FAIL_RELEASE_ASSETS=1 PATH="$install_fake_bin:$original_path" HOME="$TEST_ROOT/missing-release-home" \
+        bash -u -s -- --prefix "$missing_release_prefix" < "$ROOT/install.sh" >/dev/null 2>&1
+}
+assert_false "installer fails closed when versioned release assets are unavailable" missing_release_install_fails
+assert_false "missing release assets never fall back to a moving branch" test -e "$missing_release_prefix/ssh-key-manager"
+
+wrong_version_source="$TEST_ROOT/ssh-key-manager-wrong-version"
+sed 's/^VERSION="[^"]*"/VERSION="9.9.8"/' "$ROOT/ssh-key-manager" > "$wrong_version_source"
+chmod 755 "$wrong_version_source"
+wrong_version_prefix="$TEST_ROOT/wrong-version/bin"
+wrong_version_install_fails() {
+    INSTALL_SOURCE="$wrong_version_source" PATH="$install_fake_bin:$original_path" HOME="$TEST_ROOT/wrong-version-home" \
+        bash -u -s -- --prefix "$wrong_version_prefix" < "$ROOT/install.sh" >/dev/null 2>&1
+}
+assert_false "installer rejects a checksummed artifact whose embedded version is unexpected" wrong_version_install_fails
+assert_false "version mismatch writes no executable" test -e "$wrong_version_prefix/ssh-key-manager"
 
 bad_install_prefix="$TEST_ROOT/bad-install/bin"
 bad_checksum_install_fails() {

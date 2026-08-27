@@ -98,13 +98,8 @@ else
        ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
         "https://github.com/$REPOSITORY/releases/download/v$VERSION/ssh-key-manager.sha256" \
         --output "$tmp_dir/ssh-key-manager.sha256"; then
-        echo "Versioned assets are unavailable; using the checksummed main artifact."
-        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/$REPOSITORY/main/ssh-key-manager" \
-            --output "$tmp_dir/ssh-key-manager"
-        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/$REPOSITORY/main/ssh-key-manager.sha256" \
-            --output "$tmp_dir/ssh-key-manager.sha256"
+        echo "Versioned release assets for v$VERSION are unavailable; refusing to install from a moving branch." >&2
+        exit 1
     fi
     verify_checksum_file "$tmp_dir/ssh-key-manager" "$tmp_dir/ssh-key-manager.sha256" || {
         echo "Downloaded release checksum verification failed" >&2
@@ -112,6 +107,11 @@ else
     }
 fi
 
+downloaded_version=$(sed -n 's/^VERSION="\([0-9.]*\)"/\1/p' "$tmp_dir/ssh-key-manager" | head -1)
+[[ "$downloaded_version" == "$VERSION" ]] || {
+    echo "Downloaded binary version mismatch: expected $VERSION, got ${downloaded_version:-unknown}" >&2
+    exit 1
+}
 grep -q '^#!/usr/bin/env bash$' "$tmp_dir/ssh-key-manager" || { echo "Downloaded file is not SSH Key Manager" >&2; exit 1; }
 bash -n "$tmp_dir/ssh-key-manager" || { echo "Downloaded script failed syntax validation" >&2; exit 1; }
 chmod 755 "$tmp_dir/ssh-key-manager"
