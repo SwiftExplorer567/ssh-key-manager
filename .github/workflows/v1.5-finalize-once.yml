@@ -22,6 +22,19 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck openssh-server
       - name: Apply final v1.5 release patch
         run: python3 .github/v1.5_finalize.py
+      - name: Document integration-test lint boundaries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/integration/sshd_integration_test.sh')
+          text = p.read_text()
+          marker = '#!/usr/bin/env bash\n'
+          note = '# shellcheck disable=SC1091,SC2034,SC2024 # sourced SKM globals and runner-owned log redirect are intentional\n'
+          if note not in text:
+              if text.count(marker) != 1:
+                  raise SystemExit('integration shebang not found exactly once')
+              p.write_text(text.replace(marker, marker + note, 1))
+          PY
       - name: Generate distributable
         run: make build
       - name: Lint final release candidate
