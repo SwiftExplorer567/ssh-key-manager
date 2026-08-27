@@ -106,3 +106,22 @@ replace(
     '            fi\n'
     '            ;;\n',
 )
+
+replace(
+    "src/fleet.sh",
+    '    local operation="$1" source="$2" path="$source" tmp="" rc\n',
+    '    local operation="$1" source="$2" tmp="" rc\n    local path="$source"\n',
+)
+replace(
+    "tests/fleet_test.sh",
+    'assert_true "import creates identity backup" bash -c \'compgen -G "$1.pre-import-*" >/dev/null\' _ "$SKM_IDENTITIES_FILE"\n'
+    'assert_true "import creates policy backup" bash -c \'compgen -G "$1.pre-import-*" >/dev/null\' _ "$SKM_POLICY_FILE"\n',
+    'backup_exists() { compgen -G "$1" >/dev/null; }\n'
+    'assert_true "import creates identity backup" backup_exists "$SKM_IDENTITIES_FILE.pre-import-*"\n'
+    'assert_true "import creates policy backup" backup_exists "$SKM_POLICY_FILE.pre-import-*"\n',
+)
+replace(
+    "remote/identities_replace.sh",
+    '$2 !~ /^SHA256:[A-Za-z0-9+\\/=_.-]+$/ { exit 1 }',
+    '$2 !~ /^SHA256:[A-Za-z0-9+\\/=_-]+$/ { exit 1 }',
+)
