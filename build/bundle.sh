@@ -21,6 +21,7 @@ append_module() {
     append_module "$ROOT/src/runtime.sh"
     append_module "$ROOT/src/ui.sh"
     append_module "$ROOT/src/hosts.sh"
+    append_module "$ROOT/src/host_trust.sh"
     append_module "$ROOT/src/ssh_transport.sh"
     printf '\n# --- embedded remote programs ---\n'
     printf 'REMOTE_ADD_SCRIPT=%q\n' "$(<"$ROOT/remote/authorized_add.sh")"
