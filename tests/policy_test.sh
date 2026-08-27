@@ -42,10 +42,11 @@ remote_authorized_keys() {
 }
 
 matrix_output=$(policy_matrix)
-assert_true "policy matrix reports matching local authorization" grep -Eq 'workstation.*OK' <<< "$matrix_output"
-assert_true "policy matrix reports matching remote authorization" grep -Eq 'phone.*OK' <<< "$matrix_output"
-assert_false "matching matrix has no missing entries" grep -Fq 'MISSING' <<< "$matrix_output"
-assert_false "matching matrix has no excess entries" grep -Fq 'EXCESS' <<< "$matrix_output"
+matrix_rows=$(printf '%s\n' "$matrix_output" | tail -n +3)
+assert_true "policy matrix reports matching local authorization" grep -Eq 'workstation.*OK' <<< "$matrix_rows"
+assert_true "policy matrix reports matching remote authorization" grep -Eq 'phone.*OK' <<< "$matrix_rows"
+assert_false "matching matrix has no missing cells" grep -Fq 'MISSING' <<< "$matrix_rows"
+assert_false "matching matrix has no excess cells" grep -Fq 'EXCESS' <<< "$matrix_rows"
 assert_true "policy check succeeds when observed state matches" policy_check >/dev/null 2>&1
 
 printf '%s\n%s\n' "$primary_key" "$phone_key" > "$SKM_AUTHORIZED_KEYS"
