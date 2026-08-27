@@ -38,8 +38,9 @@ config_import "$export_path" >/dev/null
 assert_true "import restores canonical identity names" grep -Fq 'primary' <<< "$(identity_list)"
 assert_false "import replaces changed identity metadata" grep -Fq 'changed' <<< "$(identity_list)"
 assert_true "import restores desired-state policy" grep -Fq 'remotebox' <<< "$(policy_list)"
-assert_true "import creates identity backup" bash -c 'compgen -G "$1.pre-import-*" >/dev/null' _ "$SKM_IDENTITIES_FILE"
-assert_true "import creates policy backup" bash -c 'compgen -G "$1.pre-import-*" >/dev/null' _ "$SKM_POLICY_FILE"
+backup_exists() { compgen -G "$1" >/dev/null; }
+assert_true "import creates identity backup" backup_exists "$SKM_IDENTITIES_FILE.pre-import-*"
+assert_true "import creates policy backup" backup_exists "$SKM_POLICY_FILE.pre-import-*"
 
 invalid_path="$TEST_ROOT/invalid-trust-config.skm"
 sed 's/|remotebox$/|missingbox/' "$export_path" > "$invalid_path"

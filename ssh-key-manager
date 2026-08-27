@@ -6,7 +6,7 @@
 set -o pipefail
 umask 077
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 APP_NAME="SSH Key Manager"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 
@@ -745,6 +745,7 @@ ssh_run_batch() {
 # --- embedded remote programs ---
 REMOTE_ADD_SCRIPT=$'#!/bin/sh\n\nset -eu\numask 077\nssh_dir="$HOME/.ssh"\nauth="$ssh_dir/authorized_keys"\nmkdir -p "$ssh_dir"\nchmod 700 "$ssh_dir"\n[ ! -L "$auth" ] || { echo "unsafe-symlink" >&2; exit 20; }\nincoming=$(mktemp "$ssh_dir/skm.in.XXXXXX")\ntmp=$(mktemp "$ssh_dir/authorized_keys.skm.XXXXXX")\nlock="$ssh_dir/.skm-authorized-keys.lock"\ncleanup() { rm -f "$incoming" "$tmp"; rmdir "$lock" 2>/dev/null || true; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$incoming"\nblob=$(awk \'NR==1 {print $2}\' "$incoming")\n[ -n "$blob" ] || { echo "invalid-key" >&2; exit 21; }\nn=0\nwhile ! mkdir "$lock" 2>/dev/null; do n=$((n+1)); [ "$n" -lt 30 ] || exit 22; sleep 1; done\n[ -f "$auth" ] && cat "$auth" > "$tmp"\nif awk -v wanted="$blob" \'{ for (i=1; i<=NF; i++) if ($i == wanted) found=1 } END { exit !found }\' "$tmp"; then\n  echo exists\nelse\n  cat "$incoming" >> "$tmp"\n  echo added\nfi\nchmod 600 "$tmp"\nif [ -f "$auth" ]; then cp -p "$auth" "$auth.skm.bak" 2>/dev/null || true; fi\nmv -f "$tmp" "$auth"\nrmdir "$lock"\ntrap - EXIT HUP INT TERM\nrm -f "$incoming"'
 REMOTE_REMOVE_SCRIPT=$'#!/bin/sh\n\nset -eu\numask 077\nssh_dir="$HOME/.ssh"\nauth="$ssh_dir/authorized_keys"\n[ -f "$auth" ] && [ ! -L "$auth" ] || exit 20\nincoming=$(mktemp "$ssh_dir/skm.remove.XXXXXX")\ntmp=$(mktemp "$ssh_dir/authorized_keys.skm.XXXXXX")\nlock="$ssh_dir/.skm-authorized-keys.lock"\ncleanup() { rm -f "$incoming" "$tmp"; rmdir "$lock" 2>/dev/null || true; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$incoming"\nblob=$(cat "$incoming")\n[ -n "$blob" ] || exit 21\nn=0\nwhile ! mkdir "$lock" 2>/dev/null; do n=$((n+1)); [ "$n" -lt 30 ] || exit 22; sleep 1; done\nawk -v wanted="$blob" \'{ found=0; for (i=1; i<=NF; i++) if ($i == wanted) found=1; if (!found) print }\' "$auth" > "$tmp"\nchmod 600 "$tmp"\ncp -p "$auth" "$auth.skm.bak" 2>/dev/null || true\nmv -f "$tmp" "$auth"\nrmdir "$lock"\ntrap - EXIT HUP INT TERM\nrm -f "$incoming"'
+REMOTE_IDENTITIES_SYNC_SCRIPT=$'#!/usr/bin/env sh\nset -eu\numask 077\n\nconfig_dir="${SKM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ssh-key-manager}"\ntarget="$config_dir/identities.conf"\nmkdir -p "$config_dir"\nchmod 700 "$config_dir" 2>/dev/null || true\n\nif [ -L "$target" ]; then\n    echo "Refusing to replace symlinked identity registry." >&2\n    exit 1\nfi\n\ntmp=$(mktemp "$config_dir/identities.sync.XXXXXX")\ncleanup() { rm -f "$tmp"; }\ntrap cleanup EXIT HUP INT TERM\ncat > "$tmp"\nchmod 600 "$tmp"\n\nawk -F\'|\' \'\n    NF != 4 { exit 1 }\n    length($1) < 1 || length($1) > 63 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ { exit 1 }\n    $2 !~ /^SHA256:[A-Za-z0-9+\\/=_-]+$/ { exit 1 }\n    $3 != "device" && $3 != "server" && $3 != "service" && $3 != "other" { exit 1 }\n    $4 != "active" && $4 != "retired" { exit 1 }\n    seen_name[$1]++ { exit 1 }\n    seen_fp[$2]++ { exit 1 }\n    END { if (NR == 0) exit 1 }\n\' "$tmp" || {\n    echo "Invalid identity registry payload." >&2\n    exit 1\n}\n\nstamp=$(date +%Y%m%d-%H%M%S)\nif [ -f "$target" ]; then\n    backup="$target.pre-sync-$stamp-$$"\n    cp -p "$target" "$backup"\n    chmod 600 "$backup" 2>/dev/null || true\nfi\n\nmv -f "$tmp" "$target"\nchmod 600 "$target"\ntrap - EXIT HUP INT TERM\ncount=$(wc -l < "$target" | tr -d \' \')\nprintf \'SYNCED %s\\n\' "$count"'
 
 # --- src/access.sh ---
 # shellcheck shell=bash
@@ -1819,6 +1820,271 @@ key_display_label() {
     printf '%s' "$comment"
 }
 
+# --- src/fleet.sh ---
+# shellcheck shell=bash
+
+# Fleet automation deliberately separates identity synchronization from policy.
+# Identity registries are fingerprint-anchored and portable. Policy rules refer
+# to local SKM machine aliases, so they are exported/imported with validation but
+# are never blindly mirrored by `skm sync identities`.
+
+declare -a IMPORT_ID_NAMES IMPORT_ID_FINGERPRINTS IMPORT_ID_TYPES IMPORT_ID_STATUSES
+declare -a IMPORT_POLICY_FINGERPRINTS IMPORT_POLICY_HOSTS
+
+config_write_snapshot() {
+    local i
+    load_identities
+    load_policy
+    printf 'SKM-TRUST-CONFIG|1\n'
+    for i in "${!IDENTITY_NAMES[@]}"; do
+        printf 'IDENTITY|%s|%s|%s|%s\n' \
+            "${IDENTITY_NAMES[$i]}" "${IDENTITY_FINGERPRINTS[$i]}" \
+            "${IDENTITY_TYPES[$i]}" "${IDENTITY_STATUSES[$i]}"
+    done
+    for i in "${!POLICY_FINGERPRINTS[@]}"; do
+        printf 'POLICY|%s|%s\n' "${POLICY_FINGERPRINTS[$i]}" "${POLICY_HOSTS[$i]}"
+    done
+}
+
+config_export() {
+    local destination="${1:--}" tmp parent
+    if [[ "$destination" == "-" ]]; then
+        config_write_snapshot
+        return 0
+    fi
+    parent=$(dirname "$destination")
+    [[ -d "$parent" ]] || { fail "Export directory does not exist: $parent"; return 1; }
+    tmp=$(mktemp "$parent/.skm-export.XXXXXX") || return 1
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! config_write_snapshot > "$tmp"; then
+        rm -f "$tmp"
+        fail "Could not export trust configuration."
+        return 1
+    fi
+    mv -f "$tmp" "$destination"
+    chmod 600 "$destination" 2>/dev/null || true
+    ok "Exported trust configuration to $destination."
+}
+
+import_identity_index_by_fingerprint() {
+    local wanted="$1" i
+    for i in "${!IMPORT_ID_FINGERPRINTS[@]}"; do
+        [[ "${IMPORT_ID_FINGERPRINTS[$i]}" == "$wanted" ]] && { printf '%s' "$i"; return 0; }
+    done
+    return 1
+}
+
+config_parse_file() {
+    local path="$1" line line_no=0 kind a b c d extra i identity_idx
+    IMPORT_ID_NAMES=() IMPORT_ID_FINGERPRINTS=() IMPORT_ID_TYPES=() IMPORT_ID_STATUSES=()
+    IMPORT_POLICY_FINGERPRINTS=() IMPORT_POLICY_HOSTS=()
+    [[ -f "$path" ]] || { fail "Config file not found: $path"; return 1; }
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_no=$((line_no + 1))
+        line="${line%$'\r'}"
+        if (( line_no == 1 )); then
+            [[ "$line" == "SKM-TRUST-CONFIG|1" ]] || { fail "Unsupported or invalid trust config header."; return 1; }
+            continue
+        fi
+        [[ -z "$line" ]] && continue
+        IFS='|' read -r kind a b c d extra <<< "$line"
+        case "$kind" in
+            IDENTITY)
+                [[ -z "${extra:-}" && -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || {
+                    fail "Invalid identity record on line $line_no."; return 1;
+                }
+                valid_name "$a" || { fail "Invalid identity name on line $line_no."; return 1; }
+                valid_fingerprint "$b" || { fail "Invalid identity fingerprint on line $line_no."; return 1; }
+                valid_identity_type "$c" || { fail "Invalid identity type on line $line_no."; return 1; }
+                valid_identity_status "$d" || { fail "Invalid identity status on line $line_no."; return 1; }
+                for i in "${!IMPORT_ID_NAMES[@]}"; do
+                    [[ "${IMPORT_ID_NAMES[$i]}" == "$a" ]] && { fail "Duplicate identity name '$a' in import."; return 1; }
+                    [[ "${IMPORT_ID_FINGERPRINTS[$i]}" == "$b" ]] && { fail "Duplicate identity fingerprint '$b' in import."; return 1; }
+                done
+                IMPORT_ID_NAMES+=("$a")
+                IMPORT_ID_FINGERPRINTS+=("$b")
+                IMPORT_ID_TYPES+=("$c")
+                IMPORT_ID_STATUSES+=("$d")
+                ;;
+            POLICY)
+                [[ -z "${c:-}" && -z "${d:-}" && -z "${extra:-}" && -n "$a" && -n "$b" ]] || {
+                    fail "Invalid policy record on line $line_no."; return 1;
+                }
+                valid_fingerprint "$a" || { fail "Invalid policy fingerprint on line $line_no."; return 1; }
+                [[ "$b" != *'|'* ]] || { fail "Invalid policy machine on line $line_no."; return 1; }
+                for i in "${!IMPORT_POLICY_FINGERPRINTS[@]}"; do
+                    if [[ "${IMPORT_POLICY_FINGERPRINTS[$i]}" == "$a" && "${IMPORT_POLICY_HOSTS[$i]}" == "$b" ]]; then
+                        fail "Duplicate policy rule '$a -> $b' in import."
+                        return 1
+                    fi
+                done
+                IMPORT_POLICY_FINGERPRINTS+=("$a")
+                IMPORT_POLICY_HOSTS+=("$b")
+                ;;
+            *) fail "Unknown trust config record '$kind' on line $line_no."; return 1 ;;
+        esac
+    done < "$path"
+
+    (( line_no > 0 )) || { fail "Trust config is empty."; return 1; }
+    for i in "${!IMPORT_POLICY_FINGERPRINTS[@]}"; do
+        identity_idx=$(import_identity_index_by_fingerprint "${IMPORT_POLICY_FINGERPRINTS[$i]}") || {
+            fail "Policy references an identity fingerprint not present in the imported registry: ${IMPORT_POLICY_FINGERPRINTS[$i]}"
+            return 1
+        }
+        [[ "${IMPORT_ID_STATUSES[$identity_idx]}" == "active" ]] || {
+            fail "Policy references retired identity '${IMPORT_ID_NAMES[$identity_idx]}'."
+            return 1
+        }
+        host_index "${IMPORT_POLICY_HOSTS[$i]}" >/dev/null 2>&1 || {
+            fail "Policy references unknown local machine alias '${IMPORT_POLICY_HOSTS[$i]}'."
+            return 1
+        }
+    done
+}
+
+config_with_source() {
+    local operation="$1" source="$2" tmp="" rc
+    local path="$source"
+    if [[ "$source" == "-" ]]; then
+        tmp=$(mktemp "$CONFIG_DIR/trust-import.XXXXXX") || return 1
+        cat > "$tmp"
+        chmod 600 "$tmp" 2>/dev/null || true
+        path="$tmp"
+    fi
+    case "$operation" in
+        validate)
+            if config_parse_file "$path"; then
+                ok "Valid trust configuration: ${#IMPORT_ID_NAMES[@]} identities, ${#IMPORT_POLICY_FINGERPRINTS[@]} policy rules."
+                rc=0
+            else
+                rc=1
+            fi
+            ;;
+        import)
+            if config_parse_file "$path"; then
+                config_import_parsed
+                rc=$?
+            else
+                rc=1
+            fi
+            ;;
+        *) rc=1 ;;
+    esac
+    [[ -n "$tmp" ]] && rm -f "$tmp"
+    return "$rc"
+}
+
+config_validate() { config_with_source validate "$1"; }
+config_import() { config_with_source import "$1"; }
+
+config_import_parsed() {
+    local id_tmp policy_tmp i stamp suffix id_backup policy_backup
+    [[ ! -L "$IDENTITIES_FILE" ]] || { fail "Refusing to import over symlinked identity registry."; return 1; }
+    [[ ! -L "$POLICY_FILE" ]] || { fail "Refusing to import over symlinked policy file."; return 1; }
+    id_tmp=$(mktemp "$CONFIG_DIR/identities.import.XXXXXX") || return 1
+    policy_tmp=$(mktemp "$CONFIG_DIR/policy.import.XXXXXX") || { rm -f "$id_tmp"; return 1; }
+    chmod 600 "$id_tmp" "$policy_tmp" 2>/dev/null || true
+
+    for i in "${!IMPORT_ID_NAMES[@]}"; do
+        printf '%s|%s|%s|%s\n' "${IMPORT_ID_NAMES[$i]}" "${IMPORT_ID_FINGERPRINTS[$i]}" \
+            "${IMPORT_ID_TYPES[$i]}" "${IMPORT_ID_STATUSES[$i]}" >> "$id_tmp"
+    done
+    for i in "${!IMPORT_POLICY_FINGERPRINTS[@]}"; do
+        printf '%s|%s\n' "${IMPORT_POLICY_FINGERPRINTS[$i]}" "${IMPORT_POLICY_HOSTS[$i]}" >> "$policy_tmp"
+    done
+
+    stamp=$(date +%Y%m%d-%H%M%S)
+    suffix="pre-import-$stamp-$$"
+    id_backup="$IDENTITIES_FILE.$suffix"
+    policy_backup="$POLICY_FILE.$suffix"
+    cp -p "$IDENTITIES_FILE" "$id_backup" || { rm -f "$id_tmp" "$policy_tmp"; fail "Could not back up identity registry."; return 1; }
+    cp -p "$POLICY_FILE" "$policy_backup" || { rm -f "$id_tmp" "$policy_tmp" "$id_backup"; fail "Could not back up policy."; return 1; }
+    chmod 600 "$id_backup" "$policy_backup" 2>/dev/null || true
+
+    if ! mv -f "$id_tmp" "$IDENTITIES_FILE"; then
+        rm -f "$policy_tmp"
+        fail "Could not replace identity registry."
+        return 1
+    fi
+    if ! mv -f "$policy_tmp" "$POLICY_FILE"; then
+        cp -p "$id_backup" "$IDENTITIES_FILE" || true
+        cp -p "$policy_backup" "$POLICY_FILE" || true
+        fail "Could not replace policy; previous configuration restored."
+        return 1
+    fi
+    chmod 600 "$IDENTITIES_FILE" "$POLICY_FILE" 2>/dev/null || true
+    ok "Imported ${#IMPORT_ID_NAMES[@]} identities and ${#IMPORT_POLICY_FINGERPRINTS[@]} policy rules."
+    info "Backups: $id_backup and $policy_backup"
+}
+
+sync_identities() {
+    local machine="$1" index i payload="" output
+    require_host "$machine" || return 1
+    index=$RESOLVED_HOST_INDEX
+    is_local_host "$index" && { fail "Identity sync target must be a remote machine."; return 1; }
+    load_identities
+    (( ${#IDENTITY_NAMES[@]} > 0 )) || { fail "Identity registry is empty; refusing to replace remote registry."; return 1; }
+    for i in "${!IDENTITY_NAMES[@]}"; do
+        payload="${payload}${payload:+$'\n'}${IDENTITY_NAMES[$i]}|${IDENTITY_FINGERPRINTS[$i]}|${IDENTITY_TYPES[$i]}|${IDENTITY_STATUSES[$i]}"
+    done
+    if output=$(ssh_run_batch "$index" "$REMOTE_IDENTITIES_SYNC_SCRIPT" <<< "$payload"); then
+        ok "Synced ${#IDENTITY_NAMES[@]} identities to $machine."
+        info "Remote result: $(sanitize_text "$output")"
+        info "Policy was not synchronized; desired-state rules remain local to each SKM node."
+    else
+        fail "Could not synchronize identity registry to $machine."
+        return 1
+    fi
+}
+
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "$value"
+}
+
+json_command_result() {
+    local command_name="$1" rc="$2" output="$3" line issue first=1 issue_count=0
+    local issues=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "warn  "* || "$line" == "error "* ]]; then
+            if [[ "$line" =~ ^warn[[:space:]]+[0-9]+[[:space:]]+(trust|policy)[[:space:]] ]]; then
+                continue
+            fi
+            issue="${line#warn  }"
+            issue="${issue#error }"
+            if (( first == 0 )); then issues="$issues,"; fi
+            issues="$issues\"$(json_escape "$issue")\""
+            first=0
+            issue_count=$((issue_count + 1))
+        fi
+    done <<< "$output"
+    printf '{"command":"%s","version":"%s","ok":%s,"exit_code":%d,"issue_count":%d,"issues":[%s]}\n' \
+        "$(json_escape "$command_name")" "$(json_escape "$VERSION")" \
+        "$([[ "$rc" == "0" ]] && printf true || printf false)" "$rc" "$issue_count" "$issues"
+}
+
+audit_json() {
+    local output rc=0
+    local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
+    output=$(audit 2>&1) || rc=$?
+    json_command_result audit "$rc" "$output"
+    return "$rc"
+}
+
+policy_check_json() {
+    local output rc=0
+    local C_ACCENT="" C_SILVER="" C_MUTED="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_RESET=""
+    output=$(policy_check 2>&1) || rc=$?
+    json_command_result policy-check "$rc" "$output"
+    return "$rc"
+}
+
 # --- src/updates.sh ---
 # shellcheck shell=bash
 
@@ -1996,11 +2262,15 @@ Commands:
   skm policy expect IDENTITY MACHINE  Declare expected authorization
   skm policy remove IDENTITY MACHINE  Remove an expectation (does not revoke)
   skm policy matrix                  Compare desired and observed authorization
-  skm policy check                   Exit nonzero on MISSING/EXCESS policy drift
+  skm policy check [--json]          Exit nonzero on MISSING/EXCESS policy drift
+  skm config export [PATH|-]         Export registry + policy (no private keys)
+  skm config validate PATH|-         Validate a trust config before import
+  skm config import PATH|-           Restore registry + policy with backups
+  skm sync identities MACHINE       Replace a remote canonical identity registry
   skm key list                      Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
-  skm audit                         Audit trust, unknown/retired keys and hygiene
+  skm audit [--json]                Audit trust; JSON mode preserves exit status
   skm doctor
   skm update check
   skm update install
@@ -2070,8 +2340,29 @@ dispatch() {
                 expect) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm policy expect IDENTITY MACHINE"; policy_expect "$2" "$3";;
                 remove) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm policy remove IDENTITY MACHINE"; policy_remove "$2" "$3";;
                 matrix) policy_matrix;;
-                check) policy_check;;
+                check)
+                    if [[ "${2:-}" == "--json" ]]; then policy_check_json
+                    elif [[ -z "${2:-}" ]]; then policy_check
+                    else die "Usage: skm policy check [--json]"
+                    fi
+                    ;;
                 *) die "Usage: skm policy {list|expect|remove|matrix|check}";;
+            esac
+            ;;
+        config)
+            shift
+            case "${1:-}" in
+                export) config_export "${2:--}";;
+                validate) [[ -n "${2:-}" ]] || die "Usage: skm config validate PATH|-"; config_validate "$2";;
+                import) [[ -n "${2:-}" ]] || die "Usage: skm config import PATH|-"; config_import "$2";;
+                *) die "Usage: skm config {export|validate|import}";;
+            esac
+            ;;
+        sync)
+            shift
+            case "${1:-}" in
+                identities) [[ -n "${2:-}" ]] || die "Usage: skm sync identities MACHINE"; sync_identities "$2";;
+                *) die "Usage: skm sync identities MACHINE";;
             esac
             ;;
         key)
@@ -2083,7 +2374,12 @@ dispatch() {
                 *) die "Usage: skm key {list|generate|public}";;
             esac
             ;;
-        audit) audit ;;
+        audit)
+            if [[ "${2:-}" == "--json" ]]; then audit_json
+            elif [[ -z "${2:-}" ]]; then audit
+            else die "Usage: skm audit [--json]"
+            fi
+            ;;
         doctor) doctor ;;
         update)
             case "${2:-check}" in

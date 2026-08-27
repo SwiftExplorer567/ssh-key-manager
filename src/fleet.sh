@@ -121,7 +121,8 @@ config_parse_file() {
 }
 
 config_with_source() {
-    local operation="$1" source="$2" path="$source" tmp="" rc
+    local operation="$1" source="$2" tmp="" rc
+    local path="$source"
     if [[ "$source" == "-" ]]; then
         tmp=$(mktemp "$CONFIG_DIR/trust-import.XXXXXX") || return 1
         cat > "$tmp"

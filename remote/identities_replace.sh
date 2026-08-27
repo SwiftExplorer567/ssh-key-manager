@@ -21,7 +21,7 @@ chmod 600 "$tmp"
 awk -F'|' '
     NF != 4 { exit 1 }
     length($1) < 1 || length($1) > 63 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ { exit 1 }
-    $2 !~ /^SHA256:[A-Za-z0-9+\/=_.-]+$/ { exit 1 }
+    $2 !~ /^SHA256:[A-Za-z0-9+\/=_-]+$/ { exit 1 }
     $3 != "device" && $3 != "server" && $3 != "service" && $3 != "other" { exit 1 }
     $4 != "active" && $4 != "retired" { exit 1 }
     seen_name[$1]++ { exit 1 }

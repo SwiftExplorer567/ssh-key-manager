@@ -11,6 +11,7 @@ tests=(
     access_test.sh
     identity_audit_test.sh
     policy_test.sh
+    fleet_test.sh
     updates_install_test.sh
     ui_cli_test.sh
     uninstall_release_test.sh
