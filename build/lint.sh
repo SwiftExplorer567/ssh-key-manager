@@ -21,6 +21,8 @@ append_module() {
     printf '\nREMOTE_ADD_SCRIPT=""\n'
     printf 'REMOTE_REMOVE_SCRIPT=""\n'
     append_module "$ROOT/src/access.sh"
+    append_module "$ROOT/src/identities.sh"
+    append_module "$ROOT/src/security_display.sh"
     append_module "$ROOT/src/updates.sh"
     append_module "$ROOT/src/cli.sh"
 } > "$LINT_BUNDLE"
