@@ -38,6 +38,11 @@ Commands:
   skm identity rename NAME NEW_NAME
   skm identity retire NAME
   skm identity activate NAME
+  skm policy list
+  skm policy expect IDENTITY MACHINE  Declare expected authorization
+  skm policy remove IDENTITY MACHINE  Remove an expectation (does not revoke)
+  skm policy matrix                  Compare desired and observed authorization
+  skm policy check                   Exit nonzero on MISSING/EXCESS policy drift
   skm key list                      Public key inventory for all machines
   skm key generate [PATH] [COMMENT]
   skm key public [KEY.pub]
@@ -50,6 +55,8 @@ Commands:
 Example — register and review a device:
   skm identity add laptop SHA256:abc... device
   skm access matrix
+  skm policy matrix
+  skm policy check
   skm audit
 
 New client with no key:
@@ -100,6 +107,17 @@ dispatch() {
                 retire) [[ -n "${2:-}" ]] || die "Usage: skm identity retire NAME"; identity_retire "$2";;
                 activate) [[ -n "${2:-}" ]] || die "Usage: skm identity activate NAME"; identity_activate "$2";;
                 *) die "Usage: skm identity {list|add|show|rename|retire|activate}";;
+            esac
+            ;;
+        policy)
+            shift
+            case "${1:-}" in
+                list) policy_list;;
+                expect) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm policy expect IDENTITY MACHINE"; policy_expect "$2" "$3";;
+                remove) [[ -n "${2:-}" && -n "${3:-}" ]] || die "Usage: skm policy remove IDENTITY MACHINE"; policy_remove "$2" "$3";;
+                matrix) policy_matrix;;
+                check) policy_check;;
+                *) die "Usage: skm policy {list|expect|remove|matrix|check}";;
             esac
             ;;
         key)
