@@ -20,8 +20,11 @@ jobs:
       - name: Build generated executable
         run: make build
 
-      - name: Run tests and syntax lint
-        run: make test && make lint
+      - name: Run lint first for visible diagnostics
+        run: make lint
+
+      - name: Run full test suite
+        run: make test
 
       - name: Commit generated artifacts and remove temporary workflow
         run: |
