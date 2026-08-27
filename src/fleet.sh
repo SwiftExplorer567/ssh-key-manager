@@ -222,7 +222,10 @@ sync_parse_remote_state() {
         case "$kind" in
             IDENTITY)
                 [[ -z "${extra:-}" && -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || { fail "Remote identity registry is malformed."; return 1; }
-                valid_name "$a" && valid_fingerprint "$b" && valid_identity_type "$c" && valid_identity_status "$d" || { fail "Remote identity registry contains invalid metadata."; return 1; }
+                if ! valid_name "$a" || ! valid_fingerprint "$b" || ! valid_identity_type "$c" || ! valid_identity_status "$d"; then
+                    fail "Remote identity registry contains invalid metadata."
+                    return 1
+                fi
                 for i in "${!SYNC_REMOTE_ID_FINGERPRINTS[@]}"; do
                     [[ "${SYNC_REMOTE_ID_NAMES[$i]}" != "$a" && "${SYNC_REMOTE_ID_FINGERPRINTS[$i]}" != "$b" ]] || { fail "Remote identity registry contains duplicates."; return 1; }
                 done
