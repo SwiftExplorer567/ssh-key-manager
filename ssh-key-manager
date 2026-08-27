@@ -6,7 +6,7 @@
 set -o pipefail
 umask 077
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 APP_NAME="SSH Key Manager"
 REPOSITORY="SwiftExplorer567/ssh-key-manager"
 
@@ -124,6 +124,9 @@ ensure_runtime() {
     [[ -e "$POLICY_FILE" ]] || : > "$POLICY_FILE"
     [[ -e "$KNOWN_HOSTS_FILE" ]] || : > "$KNOWN_HOSTS_FILE"
     chmod 600 "$HOSTS_FILE" "$IDENTITIES_FILE" "$POLICY_FILE" "$KNOWN_HOSTS_FILE" 2>/dev/null || true
+    if [[ -f "$SETTINGS_FILE" && ! -L "$SETTINGS_FILE" ]]; then
+        chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
+    fi
 }
 
 load_settings() {

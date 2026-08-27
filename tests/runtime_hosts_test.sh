@@ -50,6 +50,22 @@ load_policy
 assert_eq "1" "${#HOST_NAMES[@]}" "forced machine removal removes the machine"
 assert_eq "0" "${#POLICY_HOSTS[@]}" "forced machine removal also removes stale policy references"
 
+# Runtime migration hardening: legacy settings files may predate the 0600 policy.
+printf '%s\n' 'BRAND="Legacy Settings"' > "$SKM_SETTINGS_FILE"
+chmod 644 "$SKM_SETTINGS_FILE"
+ensure_runtime
+assert_eq "600" "$(file_mode "$SKM_SETTINGS_FILE")" "runtime normalizes existing settings permissions"
+
+# Never follow a settings symlink just to repair permissions.
+settings_target="$TEST_ROOT/settings-target"
+printf '%s\n' 'BRAND="Symlink Target"' > "$settings_target"
+chmod 644 "$settings_target"
+rm -f "$SKM_SETTINGS_FILE"
+ln -s "$settings_target" "$SKM_SETTINGS_FILE"
+ensure_runtime
+assert_eq "644" "$(file_mode "$settings_target")" "runtime does not chmod settings symlink targets"
+rm -f "$SKM_SETTINGS_FILE"
+
 config_attack_marker="$TEST_ROOT/config-must-not-execute"
 printf '%s\n' 'BRAND="My Lab"' "touch $config_attack_marker" > "$SKM_SETTINGS_FILE"
 load_settings
