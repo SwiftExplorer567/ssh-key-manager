@@ -13,6 +13,18 @@ assert_true "managed private key is created" test -f "$SKM_MANAGED_KEY"
 assert_true "managed public key is created" test -f "$key_path"
 assert_eq "600" "$(file_mode "$SKM_MANAGED_KEY")" "managed private key mode is 600"
 assert_eq "644" "$(file_mode "$key_path")" "managed public key mode is 644"
+managed_original="$SKM_MANAGED_KEY"
+ln -s "$managed_original" "$SKM_SSH_DIR/id_symlinked_skm"
+ln -s "$managed_original.pub" "$SKM_SSH_DIR/id_symlinked_skm.pub"
+SKM_MANAGED_KEY="$SKM_SSH_DIR/id_symlinked_skm"
+MANAGED_KEY="$SKM_MANAGED_KEY"
+assert_false "managed key symlinks are refused" ensure_managed_key >/dev/null 2>&1
+SKM_MANAGED_KEY="$managed_original"
+MANAGED_KEY="$managed_original"
+rm -f "$SKM_SSH_DIR/id_symlinked_skm" "$SKM_SSH_DIR/id_symlinked_skm.pub"
+assert_false "key generation rejects path traversal" key_generate "$SKM_SSH_DIR/../escaped-key" safe >/dev/null 2>&1
+assert_false "key generation rejects nested key paths" key_generate "$SKM_SSH_DIR/nested/key" safe >/dev/null 2>&1
+assert_false "key generation rejects unsafe control characters in comments" key_generate "$SKM_SSH_DIR/control-comment" $'bad\ecomment' >/dev/null 2>&1
 
 fake_bin="$TEST_ROOT/fake-bin"
 ssh_capture="$TEST_ROOT/ssh-args"
