@@ -25,5 +25,9 @@ jobs:
         run: |
           brew untap aws/tap >/dev/null 2>&1 || true
           brew install shellcheck
-      - name: Build, test, and lint source
-        run: make test && make lint
+      - name: Build source
+        run: make build
+      - name: Lint source first
+        run: make lint
+      - name: Run full tests
+        run: make test
