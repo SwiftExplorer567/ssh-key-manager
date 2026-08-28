@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -12,37 +12,11 @@ func writeTestPublicKey(t *testing.T, dir, name string) string {
 	t.Helper()
 	priv := filepath.Join(dir, name)
 	pub := priv + ".pub"
-	if out, err := runCommand("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", priv); err != nil {
+	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", priv)
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen: %v: %s", err, out)
 	}
 	return pub
-}
-
-func runCommand(name string, args ...string) (string, error) {
-	cmd := execCommand(name, args...)
-	b, err := cmd.CombinedOutput()
-	return string(b), err
-}
-
-var execCommand = func(name string, args ...string) commandRunner {
-	return osExecCommand(name, args...)
-}
-
-type commandRunner interface {
-	CombinedOutput() ([]byte, error)
-}
-
-var osExecCommand = func(name string, args ...string) commandRunner {
-	return commandWrapper{name: name, args: args}
-}
-
-type commandWrapper struct {
-	name string
-	args []string
-}
-
-func (c commandWrapper) CombinedOutput() ([]byte, error) {
-	return exec.Command(c.name, c.args...).CombinedOutput()
 }
 
 func TestRotateCredentialMarksPreviousActiveRetiring(t *testing.T) {
