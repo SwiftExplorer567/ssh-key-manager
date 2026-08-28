@@ -81,9 +81,14 @@ read -r host_type host_blob _ < "$tmp/host.pub"
 printf '[127.0.0.1]:%s %s %s\n' "$port" "$host_type" "$host_blob" > "$v1/known_hosts"
 chmod 600 "$v1"/*
 
+# Keep controller-private material in its own 0700 directory. The controller
+# intentionally hardens the managed key's parent directory; it must not be the
+# same parent that contains the simulated remote account home.
+mkdir -p "$tmp/controller"
+chmod 700 "$tmp/controller"
 export SKM2_CONFIG_DIR="$tmp/config"
 export SKM2_BOOTSTRAP_KEY="$tmp/bootstrap"
-export SKM2_MANAGED_KEY="$tmp/managed"
+export SKM2_MANAGED_KEY="$tmp/controller/id_ed25519_skm2"
 go build -o "$tmp/skm2" ./cmd/skm2
 
 "$tmp/skm2" migrate v1 "$v1" --save > "$tmp/migrate.json"
@@ -137,7 +142,7 @@ if sudo grep -Fq "$smoke_blob" "$home/.ssh/authorized_keys"; then
 fi
 sudo test ! -s "$home/.ssh/authorized_keys.skm2.managed"
 
-read -r _ managed_blob _ < "$tmp/managed.pub"
+read -r _ managed_blob _ < "$tmp/controller/id_ed25519_skm2.pub"
 read -r _ bootstrap_blob _ < "$tmp/bootstrap.pub"
 sudo grep -Fq "$managed_blob" "$home/.ssh/authorized_keys"
 "$tmp/skm2" node unenroll target --yes > "$tmp/unenroll.json"
