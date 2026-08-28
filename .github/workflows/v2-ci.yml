@@ -38,6 +38,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install OpenSSH server
         run: sudo apt-get update && sudo apt-get install -y openssh-server
-      - name: Prove enrolled key cannot open arbitrary shell
+      - name: Prove restricted bridge protocol
         working-directory: v2
         run: bash tests/integration/restricted_bridge_sshd.sh
+
+  controller-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.23.x'
+      - name: Install OpenSSH server
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - name: Exercise enroll inspect plan apply rollback and unenroll
+        working-directory: v2
+        run: bash tests/integration/controller_lifecycle_sshd.sh
