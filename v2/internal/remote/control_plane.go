@@ -7,11 +7,11 @@ import (
 )
 
 type inspectionJSON struct {
-	NodeName                  string                  `json:"node_name"`
-	Username                  string                  `json:"username"`
-	Observed                  model.ObservedPrincipal `json:"observed"`
-	ManagedFingerprints       []string                `json:"managed_fingerprints"`
-	ControlPlaneFingerprints  []string                `json:"control_plane_fingerprints"`
+	NodeName                 string                  `json:"node_name"`
+	Username                 string                  `json:"username"`
+	Observed                 model.ObservedPrincipal `json:"observed"`
+	ManagedFingerprints      []string                `json:"managed_fingerprints"`
+	ControlPlaneFingerprints []string                `json:"control_plane_fingerprints"`
 }
 
 func splitControlPlaneGrants(observed model.ObservedPrincipal, controlFP string) (model.ObservedPrincipal, []string) {
@@ -28,18 +28,30 @@ func splitControlPlaneGrants(observed model.ObservedPrincipal, controlFP string)
 	return out, control
 }
 
-// MarshalJSON keeps the enrolled controller credential out of the user-access
-// grant list. The key remains part of the remote authorized_keys revision and is
-// still preserved by reconciliation; this is presentation-only separation so
-// users do not mistake the control-plane channel for application access drift.
-func (in Inspection) MarshalJSON() ([]byte, error) {
+func userAccessProjection(in Inspection) (model.ObservedPrincipal, []string) {
 	controlFP := ""
 	if path, err := ManagedKeyPath(); err == nil {
 		if _, fp, err := loadManagedPublic(path); err == nil {
 			controlFP = fp
 		}
 	}
-	observed, control := splitControlPlaneGrants(in.Observed, controlFP)
+	return splitControlPlaneGrants(in.Observed, controlFP)
+}
+
+// UserObserved returns the authorization view used by the policy planner.
+// The enrolled controller credential is transport/control-plane state, not a
+// user-access grant, so it must never create access drift warnings or changes.
+func UserObserved(in Inspection) model.ObservedPrincipal {
+	observed, _ := userAccessProjection(in)
+	return observed
+}
+
+// MarshalJSON keeps the enrolled controller credential out of the user-access
+// grant list while exposing it explicitly as control-plane state. The key still
+// participates in the remote authorized_keys revision and is preserved by
+// reconciliation; only its access-policy classification is separated.
+func (in Inspection) MarshalJSON() ([]byte, error) {
+	observed, control := userAccessProjection(in)
 	return json.Marshal(inspectionJSON{
 		NodeName:                 in.NodeName,
 		Username:                 in.Username,
