@@ -23,7 +23,6 @@ command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
 asset="skm2-${os}-${arch}"
 dir="${HOME}/.local/bin"
 mkdir -p "$dir"
-chmod 700 "$dir" 2>/dev/null || true
 
 tmp=$(mktemp -d)
 stage="$dir/.skm2.install.$$"
@@ -37,9 +36,9 @@ curl -fL --proto '=https' --tlsv1.2 \
   "$base/$asset.sha256" -o "$tmp/skm2.sha256"
 
 expected=$(awk 'NR==1 {print $1}' "$tmp/skm2.sha256")
+[ "${#expected}" -eq 64 ] || { echo "invalid checksum length" >&2; exit 1; }
 case "$expected" in
-  [0-9a-fA-F][0-9a-fA-F]*) ;;
-  *) echo "invalid checksum file" >&2; exit 1 ;;
+  *[!0-9a-fA-F]*) echo "invalid checksum file" >&2; exit 1 ;;
 esac
 
 if command -v sha256sum >/dev/null 2>&1; then
