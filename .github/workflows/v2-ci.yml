@@ -1,0 +1,43 @@
+name: V2 Beta CI
+
+on:
+  push:
+    branches: [v2-beta]
+    paths: ['v2/**', '.github/workflows/v2-*.yml']
+  pull_request:
+    paths: ['v2/**', '.github/workflows/v2-*.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.23.x'
+      - name: Test
+        working-directory: v2
+        run: go test ./...
+      - name: Vet
+        working-directory: v2
+        run: go vet ./...
+      - name: Build
+        working-directory: v2
+        run: go build -o bin/skm2 ./cmd/skm2
+
+  restricted-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install OpenSSH server
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+      - name: Prove enrolled key cannot open arbitrary shell
+        working-directory: v2
+        run: bash tests/integration/restricted_bridge_sshd.sh

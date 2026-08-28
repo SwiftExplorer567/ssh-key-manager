@@ -1,0 +1,40 @@
+name: V2 Beta Release
+
+on:
+  push:
+    tags: ['v2.*-beta.*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.23.x'
+      - name: Test beta source
+        working-directory: v2
+        run: go test ./... && go vet ./...
+      - name: Build release binaries
+        working-directory: v2
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*}; GOARCH=${target#*/}; name="skm2-${GOOS}-${GOARCH}"
+            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "dist/$name" ./cmd/skm2
+            sha256sum "dist/$name" > "dist/$name.sha256"
+          done
+      - name: Attest binaries
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'v2/dist/skm2-*'
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" v2/dist/* --prerelease --generate-notes --title "SSH Key Manager $GITHUB_REF_NAME"
