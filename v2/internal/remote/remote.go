@@ -1,0 +1,662 @@
+package remote
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/SwiftExplorer567/ssh-key-manager/v2/internal/bridge"
+	"github.com/SwiftExplorer567/ssh-key-manager/v2/internal/model"
+	"github.com/SwiftExplorer567/ssh-key-manager/v2/internal/store"
+)
+
+const bridgeVersion = "SKM2-BRIDGE|2"
+
+type target struct {
+	NodeIndex      int
+	PrincipalIndex int
+	Node           model.Node
+	Principal      model.Principal
+	Route          model.Route
+}
+
+type parsedEntry struct {
+	Line        string
+	Fingerprint string
+	PublicKey   string
+	Algorithm   string
+}
+
+type Inspection struct {
+	NodeName            string                  `json:"node_name"`
+	Username            string                  `json:"username"`
+	Observed            model.ObservedPrincipal `json:"observed"`
+	ManagedFingerprints []string                `json:"managed_fingerprints"`
+	Lines               []string                `json:"-"`
+	entries             []parsedEntry
+}
+
+type EnrollmentResult struct {
+	Node                  string `json:"node"`
+	Username              string `json:"username"`
+	ManagedKeyPath        string `json:"managed_key_path"`
+	ManagedKeyFingerprint string `json:"managed_key_fingerprint"`
+	BridgeVersion         string `json:"bridge_version"`
+}
+
+type ApplyResult struct {
+	PrincipalID string `json:"principal_id"`
+	Node        string `json:"node"`
+	Username    string `json:"username"`
+	OldRevision string `json:"old_revision"`
+	NewRevision string `json:"new_revision"`
+}
+
+func homeFile(envName, fallback string) (string, error) {
+	if v := os.Getenv(envName); v != "" {
+		return v, nil
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(h, fallback), nil
+}
+
+func ManagedKeyPath() (string, error) {
+	return homeFile("SKM2_MANAGED_KEY", filepath.Join(".ssh", "id_ed25519_skm2"))
+}
+
+func BootstrapKeyPath() (string, error) {
+	return homeFile("SKM2_BOOTSTRAP_KEY", filepath.Join(".ssh", "id_ed25519_skm"))
+}
+
+func EnsureManagedKey() (string, string, string, error) {
+	path, err := ManagedKeyPath()
+	if err != nil {
+		return "", "", "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", "", "", err
+	}
+	_ = os.Chmod(filepath.Dir(path), 0700)
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", "", "", fmt.Errorf("managed key must be a regular non-symlink file: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", "", err
+	} else {
+		cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "skm2-controller", "-f", path)
+		if out, runErr := cmd.CombinedOutput(); runErr != nil {
+			return "", "", "", fmt.Errorf("generate managed key: %w: %s", runErr, strings.TrimSpace(string(out)))
+		}
+	}
+	_ = os.Chmod(path, 0600)
+
+	pubPath := path + ".pub"
+	if info, err := os.Lstat(pubPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", "", "", fmt.Errorf("managed public key must not be a symlink: %s", pubPath)
+	}
+	pub, err := os.ReadFile(pubPath)
+	if errors.Is(err, os.ErrNotExist) {
+		cmd := exec.Command("ssh-keygen", "-y", "-f", path)
+		out, runErr := cmd.Output()
+		if runErr != nil {
+			return "", "", "", fmt.Errorf("derive managed public key: %w", runErr)
+		}
+		pub = append(bytes.TrimSpace(out), []byte(" skm2-controller\n")...)
+		if err := os.WriteFile(pubPath, pub, 0644); err != nil {
+			return "", "", "", err
+		}
+	} else if err != nil {
+		return "", "", "", err
+	}
+	pubLine := strings.TrimSpace(string(pub))
+	fp, err := fingerprintPublic(pubLine)
+	if err != nil {
+		return "", "", "", err
+	}
+	return path, pubLine, fp, nil
+}
+
+func resolveTarget(f *model.Fleet, nodeName, user string) (target, error) {
+	for ni := range f.Nodes {
+		n := f.Nodes[ni]
+		if n.Name != nodeName {
+			continue
+		}
+		pi := -1
+		if user == "" {
+			if len(n.Principals) != 1 {
+				return target{}, fmt.Errorf("node %s has %d principals; specify --user", nodeName, len(n.Principals))
+			}
+			pi = 0
+		} else {
+			for i := range n.Principals {
+				if n.Principals[i].Username == user {
+					pi = i
+					break
+				}
+			}
+			if pi < 0 {
+				return target{}, fmt.Errorf("principal %s not found on node %s", user, nodeName)
+			}
+		}
+		pr := n.Principals[pi]
+		routes := append([]model.Route(nil), pr.Routes...)
+		sort.SliceStable(routes, func(i, j int) bool { return routes[i].Priority < routes[j].Priority })
+		for _, r := range routes {
+			if r.Type == "direct" && r.Host != "" && r.Host != "local" {
+				if r.Port == 0 {
+					r.Port = 22
+				}
+				return target{NodeIndex: ni, PrincipalIndex: pi, Node: n, Principal: pr, Route: r}, nil
+			}
+		}
+		return target{}, fmt.Errorf("node %s/%s has no supported remote direct route", nodeName, pr.Username)
+	}
+	return target{}, fmt.Errorf("node not found: %s", nodeName)
+}
+
+func resolvePrincipalID(f *model.Fleet, principalID string) (target, error) {
+	for ni := range f.Nodes {
+		for pi := range f.Nodes[ni].Principals {
+			if f.Nodes[ni].Principals[pi].ID == principalID {
+				return resolveTarget(f, f.Nodes[ni].Name, f.Nodes[ni].Principals[pi].Username)
+			}
+		}
+	}
+	return target{}, fmt.Errorf("principal id not found: %s", principalID)
+}
+
+func knownHostsToken(r model.Route) string {
+	if r.Port == 22 || r.Port == 0 {
+		return r.Host
+	}
+	return fmt.Sprintf("[%s]:%d", r.Host, r.Port)
+}
+
+func writeKnownHosts(t target) (string, func(), error) {
+	if len(t.Node.HostTrust.Keys) == 0 {
+		return "", func() {}, fmt.Errorf("node %s has no pinned host key; enrollment and bridge access fail closed", t.Node.Name)
+	}
+	fh, err := os.CreateTemp("", "skm2-known-hosts-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { _ = os.Remove(fh.Name()) }
+	if err := fh.Chmod(0600); err != nil {
+		fh.Close(); cleanup(); return "", func() {}, err
+	}
+	token := knownHostsToken(t.Route)
+	for _, k := range t.Node.HostTrust.Keys {
+		if k.Algorithm == "" || k.PublicKey == "" {
+			continue
+		}
+		if _, err := fmt.Fprintf(fh, "%s %s %s\n", token, k.Algorithm, k.PublicKey); err != nil {
+			fh.Close(); cleanup(); return "", func() {}, err
+		}
+	}
+	if err := fh.Close(); err != nil {
+		cleanup(); return "", func() {}, err
+	}
+	return fh.Name(), cleanup, nil
+}
+
+func runSSH(t target, key string, batch bool, stdin []byte, remoteArgs ...string) (string, string, error) {
+	kh, cleanup, err := writeKnownHosts(t)
+	if err != nil {
+		return "", "", err
+	}
+	defer cleanup()
+	args := []string{"-T", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + kh, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=7"}
+	if key != "" {
+		args = append(args, "-i", key, "-o", "IdentitiesOnly=yes")
+	}
+	if batch {
+		args = append(args, "-o", "BatchMode=yes")
+	}
+	if t.Route.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(t.Route.Port))
+	}
+	args = append(args, t.Principal.Username+"@"+t.Route.Host)
+	args = append(args, remoteArgs...)
+	cmd := exec.Command("ssh", args...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), stderr.String(), fmt.Errorf("ssh %s@%s: %w: %s", t.Principal.Username, t.Route.Host, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), stderr.String(), nil
+}
+
+func shellQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
+}
+
+func enrollmentScript(pubLine string) (string, error) {
+	fields := strings.Fields(pubLine)
+	if len(fields) < 2 {
+		return "", errors.New("invalid controller public key")
+	}
+	blob := fields[1]
+	forcedLine := `restrict,command="$HOME/.local/libexec/skm2/bridge" ` + pubLine
+	return fmt.Sprintf(`set -eu
+umask 077
+mkdir -p "$HOME/.ssh" "$HOME/.local/libexec/skm2"
+chmod 700 "$HOME/.ssh" "$HOME/.local" "$HOME/.local/libexec" "$HOME/.local/libexec/skm2" 2>/dev/null || true
+bridge="$HOME/.local/libexec/skm2/bridge"
+ak="$HOME/.ssh/authorized_keys"
+cat > "$bridge" <<'SKM2_BRIDGE_EOF'
+%sSKM2_BRIDGE_EOF
+chmod 700 "$bridge"
+[ ! -L "$ak" ] || { echo 'symlinked authorized_keys refused' >&2; exit 20; }
+[ -e "$ak" ] || : > "$ak"
+chmod 600 "$ak"
+cp -p "$ak" "${ak}.skm2-enroll.bak"
+tmp="${ak}.skm2-enroll.$$"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+blob=%s
+awk -v blob="$blob" 'index($0, blob) == 0 { print }' "$ak" > "$tmp"
+printf '%%s\n' %s >> "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$ak"
+trap - EXIT HUP INT TERM
+`, bridge.Script, shellQuote(blob), shellQuote(forcedLine)), nil
+}
+
+func Enroll(f *model.Fleet, nodeName, user, bootstrapKey string) (EnrollmentResult, error) {
+	t, err := resolveTarget(f, nodeName, user)
+	if err != nil {
+		return EnrollmentResult{}, err
+	}
+	managedKey, pubLine, fp, err := EnsureManagedKey()
+	if err != nil {
+		return EnrollmentResult{}, err
+	}
+	if bootstrapKey == "" {
+		bootstrapKey, err = BootstrapKeyPath()
+		if err != nil {
+			return EnrollmentResult{}, err
+		}
+	}
+	if info, statErr := os.Lstat(bootstrapKey); statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		if statErr != nil {
+			return EnrollmentResult{}, fmt.Errorf("bootstrap key unavailable: %s: %w", bootstrapKey, statErr)
+		}
+		return EnrollmentResult{}, fmt.Errorf("bootstrap key must be a regular non-symlink file: %s", bootstrapKey)
+	}
+	script, err := enrollmentScript(pubLine)
+	if err != nil {
+		return EnrollmentResult{}, err
+	}
+	if _, _, err := runSSH(t, bootstrapKey, true, []byte(script), "sh", "-s"); err != nil {
+		return EnrollmentResult{}, fmt.Errorf("enroll restricted bridge: %w", err)
+	}
+	v, err := BridgeVersion(f, nodeName, t.Principal.Username)
+	if err != nil {
+		return EnrollmentResult{}, fmt.Errorf("bridge installed but restricted verification failed: %w", err)
+	}
+	return EnrollmentResult{Node: nodeName, Username: t.Principal.Username, ManagedKeyPath: managedKey, ManagedKeyFingerprint: fp, BridgeVersion: v}, nil
+}
+
+func BridgeVersion(f *model.Fleet, nodeName, user string) (string, error) {
+	t, err := resolveTarget(f, nodeName, user)
+	if err != nil {
+		return "", err
+	}
+	key, err := ManagedKeyPath()
+	if err != nil {
+		return "", err
+	}
+	out, _, err := runSSH(t, key, true, nil, "version")
+	if err != nil {
+		return "", err
+	}
+	v := strings.TrimSpace(out)
+	if v != bridgeVersion {
+		return "", fmt.Errorf("unsupported bridge version %q", v)
+	}
+	return v, nil
+}
+
+func fingerprintPublic(publicLine string) (string, error) {
+	cmd := exec.Command("ssh-keygen", "-E", "sha256", "-lf", "/dev/stdin")
+	cmd.Stdin = strings.NewReader(strings.TrimSpace(publicLine) + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("fingerprint public key: %w", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 || !strings.HasPrefix(fields[1], "SHA256:") {
+		return "", errors.New("unexpected ssh-keygen fingerprint output")
+	}
+	return fields[1], nil
+}
+
+func keyType(v string) bool {
+	return strings.HasPrefix(v, "ssh-") || strings.HasPrefix(v, "ecdsa-") || strings.HasPrefix(v, "sk-")
+}
+
+func parseAuthorizedLine(line string) (parsedEntry, bool, error) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return parsedEntry{Line: line}, false, nil
+	}
+	fields := strings.Fields(trimmed)
+	for i := 0; i+1 < len(fields); i++ {
+		if !keyType(fields[i]) {
+			continue
+		}
+		pub := fields[i] + " " + fields[i+1]
+		fp, err := fingerprintPublic(pub)
+		if err != nil {
+			return parsedEntry{}, false, err
+		}
+		return parsedEntry{Line: line, Fingerprint: fp, PublicKey: pub, Algorithm: fields[i]}, true, nil
+	}
+	return parsedEntry{Line: line}, false, nil
+}
+
+func parseInspection(f *model.Fleet, t target, raw string) (Inspection, bool, error) {
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	if len(lines) < 3 || lines[0] != "SKM2-STATE|2" {
+		return Inspection{}, false, errors.New("invalid bridge inspect response")
+	}
+	revision := ""
+	managed := map[string]bool{}
+	separator := -1
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "--" {
+			separator = i
+			break
+		}
+		if strings.HasPrefix(lines[i], "revision=") {
+			revision = strings.TrimPrefix(lines[i], "revision=")
+		} else if strings.HasPrefix(lines[i], "managed=") {
+			fp := strings.TrimPrefix(lines[i], "managed=")
+			if fp != "" {
+				managed[fp] = true
+			}
+		}
+	}
+	if revision == "" || separator < 0 {
+		return Inspection{}, false, errors.New("incomplete bridge inspect response")
+	}
+	body := append([]string(nil), lines[separator+1:]...)
+	if len(body) > 0 && body[len(body)-1] == "" {
+		body = body[:len(body)-1]
+	}
+
+	credByFP := map[string]int{}
+	for i := range f.Credentials {
+		credByFP[f.Credentials[i].Fingerprint] = i
+	}
+	grants := []model.Grant{}
+	entries := make([]parsedEntry, 0, len(body))
+	present := map[string]bool{}
+	enriched := false
+	for _, line := range body {
+		entry, isKey, err := parseAuthorizedLine(line)
+		if err != nil {
+			return Inspection{}, false, fmt.Errorf("parse authorized_keys line: %w", err)
+		}
+		entries = append(entries, entry)
+		if !isKey {
+			continue
+		}
+		present[entry.Fingerprint] = true
+		g := model.Grant{Fingerprint: entry.Fingerprint, Managed: managed[entry.Fingerprint]}
+		if idx, ok := credByFP[entry.Fingerprint]; ok {
+			g.CredentialID = f.Credentials[idx].ID
+			g.SubjectID = f.Credentials[idx].SubjectID
+			if f.Credentials[idx].PublicKey == "" {
+				f.Credentials[idx].PublicKey = entry.PublicKey
+				f.Credentials[idx].Algorithm = entry.Algorithm
+				enriched = true
+			}
+		}
+		grants = append(grants, g)
+	}
+	managedList := []string{}
+	for fp := range managed {
+		if present[fp] {
+			managedList = append(managedList, fp)
+		}
+	}
+	sort.Strings(managedList)
+	return Inspection{
+		NodeName: t.Node.Name,
+		Username: t.Principal.Username,
+		Observed: model.ObservedPrincipal{PrincipalID: t.Principal.ID, Revision: revision, Grants: grants},
+		ManagedFingerprints: managedList,
+		Lines: body,
+		entries: entries,
+	}, enriched, nil
+}
+
+func Inspect(f *model.Fleet, nodeName, user string) (Inspection, bool, error) {
+	t, err := resolveTarget(f, nodeName, user)
+	if err != nil {
+		return Inspection{}, false, err
+	}
+	key, err := ManagedKeyPath()
+	if err != nil {
+		return Inspection{}, false, err
+	}
+	out, _, err := runSSH(t, key, true, nil, "inspect")
+	if err != nil {
+		return Inspection{}, false, err
+	}
+	return parseInspection(f, t, out)
+}
+
+func credentialByChange(f *model.Fleet, c model.Change) (*model.Credential, error) {
+	for i := range f.Credentials {
+		if (c.CredentialID != "" && f.Credentials[i].ID == c.CredentialID) || f.Credentials[i].Fingerprint == c.Fingerprint {
+			return &f.Credentials[i], nil
+		}
+	}
+	return nil, fmt.Errorf("credential not found for %s", c.Fingerprint)
+}
+
+func renderChanges(f *model.Fleet, in Inspection, changes []model.Change) ([]byte, []string, error) {
+	lines := append([]string(nil), in.Lines...)
+	managed := map[string]bool{}
+	for _, fp := range in.ManagedFingerprints {
+		managed[fp] = true
+	}
+
+	for _, c := range changes {
+		switch c.Action {
+		case "grant":
+			exists := false
+			for _, e := range in.entries {
+				if e.Fingerprint == c.Fingerprint {
+					exists = true
+					break
+				}
+			}
+			if exists {
+				continue
+			}
+			cred, err := credentialByChange(f, c)
+			if err != nil {
+				return nil, nil, err
+			}
+			if strings.TrimSpace(cred.PublicKey) == "" {
+				return nil, nil, fmt.Errorf("credential %s has no public key material; inspect a node containing it or import its .pub file first", cred.ID)
+			}
+			lines = append(lines, strings.TrimSpace(cred.PublicKey)+" skm2:"+cred.ID)
+			managed[c.Fingerprint] = true
+		case "revoke":
+			if !managed[c.Fingerprint] {
+				return nil, nil, fmt.Errorf("refusing to revoke unmanaged credential %s", c.Fingerprint)
+			}
+			kept := make([]string, 0, len(lines))
+			removed := false
+			for _, line := range lines {
+				e, isKey, err := parseAuthorizedLine(line)
+				if err != nil {
+					return nil, nil, err
+				}
+				if isKey && e.Fingerprint == c.Fingerprint {
+					removed = true
+					continue
+				}
+				kept = append(kept, line)
+			}
+			if !removed {
+				return nil, nil, fmt.Errorf("managed credential %s disappeared before apply", c.Fingerprint)
+			}
+			lines = kept
+			delete(managed, c.Fingerprint)
+		default:
+			return nil, nil, fmt.Errorf("unsupported plan action %q", c.Action)
+		}
+	}
+
+	present := map[string]bool{}
+	for _, line := range lines {
+		e, isKey, err := parseAuthorizedLine(line)
+		if err != nil {
+			return nil, nil, err
+		}
+		if isKey {
+			present[e.Fingerprint] = true
+		}
+	}
+	managedList := []string{}
+	for fp := range managed {
+		if present[fp] {
+			managedList = append(managedList, fp)
+		}
+	}
+	sort.Strings(managedList)
+	content := strings.Join(lines, "\n")
+	if len(lines) > 0 {
+		content += "\n"
+	}
+	return []byte(content), managedList, nil
+}
+
+func parseApplied(raw string) (string, error) {
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	if len(lines) < 2 || lines[0] != "SKM2-APPLIED|2" {
+		return "", errors.New("invalid bridge apply response")
+	}
+	for _, line := range lines[1:] {
+		if strings.HasPrefix(line, "revision=") {
+			v := strings.TrimPrefix(line, "revision=")
+			if v != "" {
+				return v, nil
+			}
+		}
+	}
+	return "", errors.New("bridge apply response missing revision")
+}
+
+func ApplyPlan(f *model.Fleet, p model.Plan) ([]ApplyResult, error) {
+	if p.FleetRevision == "" || p.FleetRevision != f.Revision {
+		return nil, fmt.Errorf("fleet revision mismatch: plan=%s current=%s", p.FleetRevision, f.Revision)
+	}
+	changesByPrincipal := map[string][]model.Change{}
+	for _, c := range p.Changes {
+		changesByPrincipal[c.PrincipalID] = append(changesByPrincipal[c.PrincipalID], c)
+	}
+	principalIDs := make([]string, 0, len(changesByPrincipal))
+	for id := range changesByPrincipal {
+		principalIDs = append(principalIDs, id)
+	}
+	sort.Strings(principalIDs)
+
+	results := []ApplyResult{}
+	key, err := ManagedKeyPath()
+	if err != nil {
+		return results, err
+	}
+	for _, pid := range principalIDs {
+		t, err := resolvePrincipalID(f, pid)
+		if err != nil {
+			return results, err
+		}
+		out, _, err := runSSH(t, key, true, nil, "inspect")
+		if err != nil {
+			return results, err
+		}
+		inspection, _, err := parseInspection(f, t, out)
+		if err != nil {
+			return results, err
+		}
+		expected, ok := p.ExpectedRevisions[pid]
+		if !ok || expected == "" {
+			return results, fmt.Errorf("plan has no observed revision for principal %s", pid)
+		}
+		if inspection.Observed.Revision != expected {
+			return results, fmt.Errorf("remote revision mismatch for %s: plan=%s current=%s", pid, expected, inspection.Observed.Revision)
+		}
+		content, managed, err := renderChanges(f, inspection, changesByPrincipal[pid])
+		if err != nil {
+			return results, err
+		}
+		args := []string{"apply", expected}
+		args = append(args, managed...)
+		appliedOut, _, err := runSSH(t, key, true, content, args...)
+		if err != nil {
+			return results, err
+		}
+		newRevision, err := parseApplied(appliedOut)
+		if err != nil {
+			return results, err
+		}
+		r := ApplyResult{PrincipalID: pid, Node: t.Node.Name, Username: t.Principal.Username, OldRevision: expected, NewRevision: newRevision}
+		results = append(results, r)
+		_ = store.AppendHistory(map[string]any{
+			"time": time.Now().UTC(), "operation": "apply", "plan_id": p.ID,
+			"principal_id": pid, "node": t.Node.Name, "username": t.Principal.Username,
+			"old_revision": expected, "new_revision": newRevision,
+		})
+	}
+	return results, nil
+}
+
+func Rollback(f *model.Fleet, nodeName, user, expected string) (ApplyResult, error) {
+	if expected == "" {
+		return ApplyResult{}, errors.New("expected current revision is required")
+	}
+	t, err := resolveTarget(f, nodeName, user)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	key, err := ManagedKeyPath()
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	out, _, err := runSSH(t, key, true, nil, "rollback", expected)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	newRevision, err := parseApplied(out)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	r := ApplyResult{PrincipalID: t.Principal.ID, Node: t.Node.Name, Username: t.Principal.Username, OldRevision: expected, NewRevision: newRevision}
+	_ = store.AppendHistory(map[string]any{
+		"time": time.Now().UTC(), "operation": "rollback", "principal_id": t.Principal.ID,
+		"node": t.Node.Name, "username": t.Principal.Username,
+		"old_revision": expected, "new_revision": newRevision,
+	})
+	return r, nil
+}
