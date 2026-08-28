@@ -43,6 +43,9 @@ Usage:
   skm2 subject add NAME [TYPE]
   skm2 credential list
   skm2 credential import SUBJECT PUBLIC_KEY_FILE
+  skm2 credential rotate SUBJECT PUBLIC_KEY_FILE
+  skm2 credential retire SUBJECT CREDENTIAL
+  skm2 credential activate SUBJECT CREDENTIAL
 
   skm2 policy list
   skm2 policy grant SUBJECT NODE [--user USER]
@@ -307,6 +310,28 @@ func main() {
 				die(errors.New("credential import requires SUBJECT PUBLIC_KEY_FILE"))
 			}
 			c, err := importCredential(load(), a[2], a[3])
+			if err != nil {
+				die(err)
+			}
+			out(c)
+		case "rotate":
+			if len(a) != 4 {
+				die(errors.New("credential rotate requires SUBJECT PUBLIC_KEY_FILE"))
+			}
+			r, err := rotateCredential(load(), a[2], a[3])
+			if err != nil {
+				die(err)
+			}
+			out(r)
+		case "retire", "activate":
+			if len(a) != 4 {
+				die(fmt.Errorf("credential %s requires SUBJECT CREDENTIAL", a[1]))
+			}
+			status := model.CredentialRetired
+			if a[1] == "activate" {
+				status = model.CredentialActive
+			}
+			c, err := setCredentialLifecycleStatus(load(), a[2], a[3], status)
 			if err != nil {
 				die(err)
 			}
