@@ -39,6 +39,11 @@ Usage:
   skm2 node bridge-version NAME [--user USER]
   skm2 node rollback NAME [--user USER] --expected REVISION --yes
 
+  skm2 host scan NAME [--user USER]
+  skm2 host verify NAME [--user USER]
+  skm2 host trust NAME --key FILE [--user USER] --yes
+  skm2 host rotate NAME --expected-old FINGERPRINT --key FILE [--user USER] --yes
+
   skm2 subject list
   skm2 subject add NAME [TYPE]
   skm2 credential list
@@ -272,6 +277,53 @@ func main() {
 		default:
 			usage()
 			os.Exit(2)
+		}
+
+	case "host":
+		if len(a) < 2 {
+			usage(); os.Exit(2)
+		}
+		switch a[1] {
+		case "scan", "verify":
+			pos, opts, _, err := parseArgs(a[2:], "--user")
+			if err != nil {
+				die(err)
+			}
+			if len(pos) != 1 {
+				die(fmt.Errorf("host %s requires exactly one node name", a[1]))
+			}
+			if a[1] == "scan" {
+				r, err := remote.ScanHostTrust(load(), pos[0], opts["--user"])
+				if err != nil { die(err) }
+				out(r)
+			} else {
+				r, err := remote.VerifyHostTrust(load(), pos[0], opts["--user"])
+				if err != nil { die(err) }
+				out(r)
+				if !r.OK { os.Exit(1) }
+			}
+		case "trust":
+			pos, opts, flags, err := parseArgs(a[2:], "--user", "--key")
+			if err != nil { die(err) }
+			if len(pos) != 1 || opts["--key"] == "" {
+				die(errors.New("host trust requires NODE --key FILE"))
+			}
+			requireYes(flags, "host trust change")
+			r, err := remote.TrustHostKey(load(), pos[0], opts["--user"], opts["--key"])
+			if err != nil { die(err) }
+			out(r)
+		case "rotate":
+			pos, opts, flags, err := parseArgs(a[2:], "--user", "--key", "--expected-old")
+			if err != nil { die(err) }
+			if len(pos) != 1 || opts["--key"] == "" || opts["--expected-old"] == "" {
+				die(errors.New("host rotate requires NODE --expected-old FINGERPRINT --key FILE"))
+			}
+			requireYes(flags, "host trust rotation")
+			r, err := remote.RotateHostKey(load(), pos[0], opts["--user"], opts["--expected-old"], opts["--key"])
+			if err != nil { die(err) }
+			out(r)
+		default:
+			usage(); os.Exit(2)
 		}
 
 	case "subject":
