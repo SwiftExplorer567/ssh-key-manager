@@ -43,12 +43,12 @@ sudo "$(command -v sshd)" -D -e -f "$tmp/sshd_config" >"$tmp/sshd.log" 2>&1 & pi
 ssh_base=(ssh -i "$tmp/controller" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$port" root@127.0.0.1)
 
 for _ in {1..30}; do
-  if "${ssh_base[@]}" version 2>/dev/null | grep -q '^SKM2-BRIDGE|1$'; then break; fi
+  if "${ssh_base[@]}" version 2>/dev/null | grep -q '^SKM2-BRIDGE|2$'; then break; fi
   sleep .2
 done
 
 out=$("${ssh_base[@]}" inspect)
-grep -q '^SKM2-STATE|1$' <<<"$out"
+grep -q '^SKM2-STATE|2$' <<<"$out"
 rev=$(awk -F= '/^revision=/{print $2; exit}' <<<"$out")
 [[ -n "$rev" ]]
 
@@ -58,12 +58,17 @@ if "${ssh_base[@]}" 'uname -a' >/dev/null 2>&1; then
   exit 1
 fi
 
-# A revision-matched apply is accepted and returns the new revision.
-printf 'new-key\n' | "${ssh_base[@]}" apply "$rev" > "$tmp/apply.out"
-grep -q '^SKM2-APPLIED|1$' "$tmp/apply.out"
+# A revision-matched apply updates both authorized_keys and trusted ownership
+# metadata. Ownership is protocol state, never inferred from user-controlled
+# trailing comments.
+printf 'new-key\n' | "${ssh_base[@]}" apply "$rev" 'SHA256:managedtest' > "$tmp/apply.out"
+grep -q '^SKM2-APPLIED|2$' "$tmp/apply.out"
 newrev=$(awk -F= '/^revision=/{print $2; exit}' "$tmp/apply.out")
 [[ -n "$newrev" && "$newrev" != "$rev" ]]
 grep -qx 'new-key' "$tmp/authorized_keys.target"
+grep -qx 'SHA256:managedtest' "$tmp/authorized_keys.target.skm2.managed"
+out=$("${ssh_base[@]}" inspect)
+grep -q '^managed=SHA256:managedtest$' <<<"$out"
 
 # Reusing the stale pre-apply revision must fail closed and leave state unchanged.
 if printf 'attacker-key\n' | "${ssh_base[@]}" apply "$rev" >"$tmp/stale.out" 2>"$tmp/stale.err"; then
@@ -73,9 +78,10 @@ fi
 grep -q 'revision mismatch' "$tmp/stale.err"
 grep -qx 'new-key' "$tmp/authorized_keys.target"
 
-# Rollback is also revision guarded and restores the previous target state.
+# Rollback is also revision guarded and restores both target and ownership state.
 "${ssh_base[@]}" rollback "$newrev" > "$tmp/rollback.out"
-grep -q '^SKM2-APPLIED|1$' "$tmp/rollback.out"
+grep -q '^SKM2-APPLIED|2$' "$tmp/rollback.out"
 grep -qx 'old-key' "$tmp/authorized_keys.target"
+[[ ! -s "$tmp/authorized_keys.target.skm2.managed" ]]
 
 echo 'restricted bridge sshd integration passed'
