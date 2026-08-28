@@ -15,6 +15,7 @@ V2 separates concepts that v1 intentionally compressed:
 - **Route** — a connection path. The schema represents direct, Tailscale, SSH-config and ProxyJump routes; beta.1 remote mutation currently supports direct routes only.
 - **Policy** — desired Subject-to-Principal authorization with `observe`, `additive` or `authoritative` mode.
 - **Observed grant** — authorization actually present in `authorized_keys`.
+- **Control-plane credential** — the separate restricted V2 controller key used only to reach the daemonless bridge. It is not treated as a user/application grant in inspect output.
 
 ## beta.1 scope
 
@@ -88,7 +89,13 @@ Remote mutation is never enabled merely by migrating metadata. A target must alr
 
 By default enrollment uses the existing v1 SKM key (`~/.ssh/id_ed25519_skm`) as the bootstrap credential and creates a separate V2 controller key at `~/.ssh/id_ed25519_skm2`. Both paths can be overridden with `SKM2_BOOTSTRAP_KEY` / `SKM2_MANAGED_KEY` or the enrollment CLI option.
 
-The V2 controller key is written to the target as a restricted forced-command authorization. Possession of that key must not provide a generic SSH shell.
+The V2 controller key is written to the target as a restricted forced-command authorization. Possession of that key must not provide a generic SSH shell. `node inspect` presents this fingerprint separately as a control-plane credential instead of mixing it into application/user grants.
+
+### Side-by-side V1 coexistence
+
+While a target is enrolled in V2 beta, a v1 audit run from a v1 controller can report the separate `skm2-controller` fingerprint as an **unknown authorized fingerprint**. That warning is expected: v1 has no concept of a V2 control-plane credential and V2 intentionally does not weaken v1 auditing by trusting comments or key options as an ignore signal.
+
+This warning does not mean the V2 key has unrestricted access; enrollment installs it with OpenSSH `restrict` plus a forced bridge command. `skm policy check` can still remain clean because the V2 control-plane key is not a v1 desired application grant. After `node unenroll`, the V2 authorization is removed and v1 audit should return to its pre-enrollment state.
 
 Remove the V2 restricted authorization again with the bootstrap credential:
 
