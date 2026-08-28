@@ -73,8 +73,14 @@ type Route struct {
 
 type HostTrust struct {
 	Method       string     `json:"method,omitempty"`
-	Fingerprints []string   `json:"fingerprints,omitempty"`
+	Keys         []HostKey  `json:"keys,omitempty"`
 	VerifiedAt   *time.Time `json:"verified_at,omitempty"`
+}
+
+type HostKey struct {
+	Algorithm   string `json:"algorithm"`
+	PublicKey   string `json:"public_key"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 type Policy struct {
