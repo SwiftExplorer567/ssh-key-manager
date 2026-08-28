@@ -19,7 +19,11 @@ type Result struct {
 }
 
 func stableID(prefix string, values ...string) string {
-	digest := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	// Domain-separate every stable-ID namespace. Prefixes are not only display
+	// labels: including them in the digest prevents related objects built from
+	// the same source tuple (for example node and route) from sharing a suffix.
+	parts := append([]string{prefix}, values...)
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return fmt.Sprintf("%s_%x", prefix, digest[:8])
 }
 
