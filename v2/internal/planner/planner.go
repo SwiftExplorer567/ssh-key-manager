@@ -33,7 +33,11 @@ func Build(f *model.Fleet, observed []model.ObservedPrincipal) model.Plan {
 	}
 	for _, n := range f.Nodes {
 		for _, pr := range n.Principals {
-			o := obs[pr.ID]
+			o, observedOK := obs[pr.ID]
+			if !observedOK {
+				p.Warnings = append(p.Warnings, fmt.Sprintf("principal %s on %s was not observed; no changes planned", pr.ID, n.Name))
+				continue
+			}
 			actual := map[string]model.Grant{}
 			for _, g := range o.Grants {
 				actual[g.Fingerprint] = g
