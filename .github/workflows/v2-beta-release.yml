@@ -17,24 +17,72 @@ jobs:
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version: '1.23.x'
+
+      - name: Verify tag matches embedded version
+        working-directory: v2
+        run: |
+          set -euo pipefail
+          version="$(go run ./cmd/skm2 version)"
+          test "$GITHUB_REF_NAME" = "v$version" || {
+            echo "tag/version mismatch: tag=$GITHUB_REF_NAME binary=$version" >&2
+            exit 1
+          }
+
       - name: Test beta source
         working-directory: v2
         run: go test ./... && go vet ./...
+
+      - name: Install OpenSSH server
+        run: sudo apt-get update && sudo apt-get install -y openssh-server
+
+      - name: Exercise restricted SSH lifecycle
+        working-directory: v2
+        run: |
+          bash tests/integration/restricted_bridge_sshd.sh
+          bash tests/integration/controller_lifecycle_sshd.sh
+
       - name: Build release binaries
         working-directory: v2
         run: |
           set -euo pipefail
           mkdir -p dist
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            GOOS=${target%/*}; GOARCH=${target#*/}; name="skm2-${GOOS}-${GOARCH}"
-            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "dist/$name" ./cmd/skm2
+            GOOS=${target%/*}
+            GOARCH=${target#*/}
+            name="skm2-${GOOS}-${GOARCH}"
+            GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
+              go build -trimpath -ldflags='-s -w' -o "dist/$name" ./cmd/skm2
             sha256sum "dist/$name" > "dist/$name.sha256"
           done
+
+          version="$(go run ./cmd/skm2 version)"
+          {
+            echo "SKM-V2-RELEASE|1"
+            echo "version=$version"
+            echo "tag=$GITHUB_REF_NAME"
+            echo "source_commit=$GITHUB_SHA"
+            for f in dist/skm2-linux-amd64 dist/skm2-linux-arm64 dist/skm2-darwin-amd64 dist/skm2-darwin-arm64; do
+              echo "sha256=$(sha256sum "$f" | awk '{print $1}') file=$(basename "$f")"
+            done
+          } > dist/release-manifest.txt
+
+      - name: Verify built binary version
+        working-directory: v2
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          test "$(./dist/skm2-linux-amd64 version)" = "$expected"
+
       - name: Attest binaries
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'v2/dist/skm2-*'
+
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" v2/dist/* --prerelease --generate-notes --title "SSH Key Manager $GITHUB_REF_NAME"
+        run: |
+          gh release create "$GITHUB_REF_NAME" v2/dist/* \
+            --prerelease \
+            --generate-notes \
+            --title "SSH Key Manager $GITHUB_REF_NAME"
