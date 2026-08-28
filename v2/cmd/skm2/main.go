@@ -387,7 +387,7 @@ func main() {
 				}
 				fmt.Fprintln(os.Stderr, "enriched credential public-key metadata before planning")
 			}
-			observed = []model.ObservedPrincipal{inspection.Observed}
+			observed = []model.ObservedPrincipal{remote.UserObserved(inspection)}
 		} else {
 			b, err := os.ReadFile(opts["--observed"])
 			if err != nil {
