@@ -43,25 +43,23 @@ sudo "$(command -v sshd)" -D -e -f "$tmp/sshd_config" >"$tmp/sshd.log" 2>&1 & pi
 ssh_base=(ssh -i "$tmp/controller" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$port" root@127.0.0.1)
 
 for _ in {1..30}; do
-  if "${ssh_base[@]}" version 2>/dev/null | grep -q '^SKM2-BRIDGE|3$'; then break; fi
+  if "${ssh_base[@]}" version 2>/dev/null | grep -q '^SKM2-BRIDGE|2$'; then break; fi
   sleep .2
 done
+[[ "$("${ssh_base[@]}" capabilities)" == 'mutation-receipts-v1' ]]
 
 out=$("${ssh_base[@]}" inspect)
-grep -q '^SKM2-STATE|3$' <<<"$out"
+grep -q '^SKM2-STATE|2$' <<<"$out"
 rev=$(awk -F= '/^revision=/{print $2; exit}' <<<"$out")
 [[ -n "$rev" ]]
 
-# The enrolled management key must never turn into a generic shell key.
 if "${ssh_base[@]}" 'uname -a' >/dev/null 2>&1; then
   echo 'FAIL: enrolled management key obtained arbitrary shell command execution' >&2
   exit 1
 fi
 
-# A revision-matched apply updates authorized_keys, ownership metadata and a
-# mutation receipt. Ownership is protocol state, never inferred from comments.
 printf 'new-key\n' | "${ssh_base[@]}" apply "$rev" op_apply 'SHA256:managedtest' > "$tmp/apply.out"
-grep -q '^SKM2-APPLIED|3$' "$tmp/apply.out"
+grep -q '^SKM2-APPLIED|2$' "$tmp/apply.out"
 grep -q '^operation=op_apply$' "$tmp/apply.out"
 newrev=$(awk -F= '/^revision=/{print $2; exit}' "$tmp/apply.out")
 [[ -n "$newrev" && "$newrev" != "$rev" ]]
@@ -73,8 +71,6 @@ grep -q '^last_operation=op_apply$' <<<"$out"
 grep -q "^last_before=$rev$" <<<"$out"
 grep -q "^last_after=$newrev$" <<<"$out"
 
-# Reusing the stale pre-apply revision must fail closed and must not overwrite
-# the receipt for the successfully committed operation.
 if printf 'attacker-key\n' | "${ssh_base[@]}" apply "$rev" op_stale >"$tmp/stale.out" 2>"$tmp/stale.err"; then
   echo 'FAIL: stale apply unexpectedly succeeded' >&2
   exit 1
@@ -84,10 +80,8 @@ sudo grep -qx 'new-key' "$tmp/authorized_keys.target"
 out=$("${ssh_base[@]}" inspect)
 grep -q '^last_operation=op_apply$' <<<"$out"
 
-# Rollback is revision guarded, receipt-bearing, and restores both target and
-# ownership state.
 "${ssh_base[@]}" rollback "$newrev" op_rollback > "$tmp/rollback.out"
-grep -q '^SKM2-APPLIED|3$' "$tmp/rollback.out"
+grep -q '^SKM2-APPLIED|2$' "$tmp/rollback.out"
 grep -q '^operation=op_rollback$' "$tmp/rollback.out"
 sudo grep -qx 'old-key' "$tmp/authorized_keys.target"
 sudo test ! -s "$tmp/authorized_keys.target.skm2.managed"
