@@ -10,7 +10,14 @@ import (
 )
 
 func Build(f *model.Fleet, observed []model.ObservedPrincipal) model.Plan {
-	p := model.Plan{ID: store.NewID("plan"), FleetRevision: f.Revision, CreatedAt: time.Now().UTC(), ExpectedRevisions: map[string]string{}}
+	p := model.Plan{
+		ID:                store.NewID("plan"),
+		FleetRevision:     f.Revision,
+		CreatedAt:         time.Now().UTC(),
+		ExpectedRevisions: map[string]string{},
+		Changes:           []model.Change{},
+		Warnings:          []string{},
+	}
 	obs := map[string]model.ObservedPrincipal{}
 	for _, o := range observed {
 		obs[o.PrincipalID] = o
