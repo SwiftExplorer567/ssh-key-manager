@@ -4,7 +4,7 @@ set -euo pipefail
 for c in ssh ssh-keygen sshd python3; do command -v "$c" >/dev/null || { echo "missing $c" >&2; exit 1; }; done
 
 tmp=$(mktemp -d); pid=''
-cleanup(){ [[ -z "$pid" ]] || sudo kill "$pid" >/dev/null 2>&1 || true; rm -rf "$tmp"; }
+cleanup(){ [[ -z "$pid" ]] || sudo kill "$pid" >/dev/null 2>&1 || true; sudo rm -rf "$tmp"; }
 trap cleanup EXIT
 chmod 755 "$tmp"
 
@@ -65,8 +65,8 @@ printf 'new-key\n' | "${ssh_base[@]}" apply "$rev" 'SHA256:managedtest' > "$tmp/
 grep -q '^SKM2-APPLIED|2$' "$tmp/apply.out"
 newrev=$(awk -F= '/^revision=/{print $2; exit}' "$tmp/apply.out")
 [[ -n "$newrev" && "$newrev" != "$rev" ]]
-grep -qx 'new-key' "$tmp/authorized_keys.target"
-grep -qx 'SHA256:managedtest' "$tmp/authorized_keys.target.skm2.managed"
+sudo grep -qx 'new-key' "$tmp/authorized_keys.target"
+sudo grep -qx 'SHA256:managedtest' "$tmp/authorized_keys.target.skm2.managed"
 out=$("${ssh_base[@]}" inspect)
 grep -q '^managed=SHA256:managedtest$' <<<"$out"
 
@@ -76,12 +76,12 @@ if printf 'attacker-key\n' | "${ssh_base[@]}" apply "$rev" >"$tmp/stale.out" 2>"
   exit 1
 fi
 grep -q 'revision mismatch' "$tmp/stale.err"
-grep -qx 'new-key' "$tmp/authorized_keys.target"
+sudo grep -qx 'new-key' "$tmp/authorized_keys.target"
 
 # Rollback is also revision guarded and restores both target and ownership state.
 "${ssh_base[@]}" rollback "$newrev" > "$tmp/rollback.out"
 grep -q '^SKM2-APPLIED|2$' "$tmp/rollback.out"
-grep -qx 'old-key' "$tmp/authorized_keys.target"
-[[ ! -s "$tmp/authorized_keys.target.skm2.managed" ]]
+sudo grep -qx 'old-key' "$tmp/authorized_keys.target"
+sudo test ! -s "$tmp/authorized_keys.target.skm2.managed"
 
 echo 'restricted bridge sshd integration passed'
