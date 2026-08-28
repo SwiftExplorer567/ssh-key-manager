@@ -10,9 +10,7 @@ BACKUP="${AK}.skm2.bak"
 MANAGED_BACKUP="${MANAGED}.bak"
 
 # sshd invokes a forced command without argv and exposes the requested command
-# through SSH_ORIGINAL_COMMAND. Split into positional words without eval. The
-# protocol accepts only fixed operation names, revisions, operation IDs and
-# SHA256 fingerprints.
+# through SSH_ORIGINAL_COMMAND. Split into positional words without eval.
 if [ "$#" -eq 0 ]; then
   # shellcheck disable=SC2086
   set -- ${SSH_ORIGINAL_COMMAND:-}
@@ -64,13 +62,18 @@ write_receipt() {
 case "$cmd" in
  version)
    [ "$#" -eq 0 ] || { echo 'version takes no arguments' >&2; exit 64; }
-   printf '%s\n' 'SKM2-BRIDGE|3'
+   printf '%s\n' 'SKM2-BRIDGE|2'
+   ;;
+
+ capabilities)
+   [ "$#" -eq 0 ] || { echo 'capabilities takes no arguments' >&2; exit 64; }
+   printf '%s\n' 'mutation-receipts-v1'
    ;;
 
  inspect)
    [ "$#" -eq 0 ] || { echo 'inspect takes no arguments' >&2; exit 64; }
    refuse_symlinks
-   printf 'SKM2-STATE|3\nrevision=%s\n' "$(revision)"
+   printf 'SKM2-STATE|2\nrevision=%s\n' "$(revision)"
    if [ -f "$RECEIPT" ]; then
      while IFS= read -r receipt_line || [ -n "$receipt_line" ]; do
        case "$receipt_line" in
@@ -89,11 +92,20 @@ case "$cmd" in
 
  apply|rollback)
    expected="${1:-}"
-   operation="${2:-}"
    [ -n "$expected" ] || { echo 'expected revision required' >&2; exit 21; }
    valid_token "$expected" || { echo 'invalid expected revision' >&2; exit 21; }
-   valid_token "$operation" || { echo 'valid operation id required' >&2; exit 21; }
-   shift 2 || true
+   shift || true
+
+   # Receipt-aware beta.2 clients add an op_* token after the expected revision.
+   # Beta.1 clients do not. Supporting both syntaxes keeps newly enrolled targets
+   # compatible with the already published beta.1 controller.
+   operation="legacy"
+   if [ "$#" -gt 0 ]; then
+     case "$1" in
+       op_*) operation="$1"; shift ;;
+     esac
+   fi
+   valid_token "$operation" || { echo 'invalid operation id' >&2; exit 21; }
    if [ "$cmd" = rollback ] && [ "$#" -ne 0 ]; then
      echo 'rollback takes no managed fingerprints' >&2
      exit 64
@@ -128,8 +140,6 @@ case "$cmd" in
 
    chmod 600 "$tmp_ak" "$tmp_managed"
 
-   # Re-check after staging. A manual edit that raced the operation is detected
-   # even though it does not honor the bridge lock.
    actual="$(revision)"
    [ "$actual" = "$expected" ] || { rm -f "$tmp_ak" "$tmp_managed"; echo "revision mismatch expected=$expected actual=$actual" >&2; exit 22; }
 
@@ -137,18 +147,15 @@ case "$cmd" in
    [ -f "$MANAGED" ] && cp -p "$MANAGED" "$MANAGED_BACKUP" || : > "$MANAGED_BACKUP"
    chmod 600 "$BACKUP" "$MANAGED_BACKUP"
 
-   # Managed metadata is installed first. If the process is interrupted between
-   # the two renames, inspect intersects ownership with keys actually present,
-   # so the failure mode is conservative rather than destructive.
    mv -f "$tmp_managed" "$MANAGED"
    mv -f "$tmp_ak" "$AK"
    after="$(revision)"
 
-   # The receipt is outside the revision hash. It lets the controller distinguish
-   # "mutation committed but SSH response was lost" from unrelated concurrent
-   # edits without ever guessing ownership of a changed remote state.
+   # Receipt metadata is outside the revision hash. It lets a receipt-aware
+   # controller prove that its own operation committed when an SSH response is
+   # lost, without guessing based only on a changed authorized_keys revision.
    write_receipt "$operation" "$cmd" "$expected" "$after"
-   printf 'SKM2-APPLIED|3\noperation=%s\nrevision=%s\n' "$operation" "$after"
+   printf 'SKM2-APPLIED|2\noperation=%s\nrevision=%s\n' "$operation" "$after"
    ;;
 
  *)
