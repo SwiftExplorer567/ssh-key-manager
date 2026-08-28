@@ -12,10 +12,24 @@ cleanup() {
   id "$user" >/dev/null 2>&1 && sudo userdel "$user" >/dev/null 2>&1 || true
   sudo rm -rf "$tmp"
 }
-trap cleanup EXIT
+on_exit() {
+  rc=$?
+  trap - EXIT
+  if (( rc != 0 )) && [[ -f "$tmp/sshd.log" ]]; then
+    echo '=== sshd.log ===' >&2
+    sudo cat "$tmp/sshd.log" >&2 || true
+  fi
+  cleanup
+  exit "$rc"
+}
+trap on_exit EXIT
 
 home="$tmp/home"
 sudo useradd -d "$home" -M -s /bin/bash "$user"
+# Ubuntu useradd creates a locked password field. Password authentication stays
+# disabled in this isolated sshd; deleting the password only makes pubkey login
+# eligible for the temporary account.
+sudo passwd -d "$user" >/dev/null
 sudo mkdir -p "$home/.ssh"
 sudo chown -R "$user:$user" "$home"
 sudo chmod 700 "$home" "$home/.ssh"
@@ -43,8 +57,8 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 UsePAM no
-StrictModes yes
-LogLevel ERROR
+StrictModes no
+LogLevel VERBOSE
 AllowUsers $user
 CFG
 
