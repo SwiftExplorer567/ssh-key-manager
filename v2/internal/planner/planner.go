@@ -23,6 +23,17 @@ func Build(f *model.Fleet, observed []model.ObservedPrincipal) model.Plan {
 		obs[o.PrincipalID] = o
 		p.ExpectedRevisions[o.PrincipalID] = o.Revision
 	}
+
+	// A single observation is an explicitly scoped plan (for example
+	// `skm2 plan --node NAME`). Do not emit unrelated fleet warnings for
+	// principals the caller intentionally did not inspect. Multi-principal
+	// and empty observation sets retain the fleet-wide missing-observation
+	// warnings because they represent broader planning inputs.
+	scopedPrincipalID := ""
+	if len(observed) == 1 {
+		scopedPrincipalID = observed[0].PrincipalID
+	}
+
 	subjCred := map[string][]model.Credential{}
 	for _, c := range f.Credentials {
 		if c.Status == model.CredentialActive || c.Status == model.CredentialRetiring {
@@ -40,6 +51,9 @@ func Build(f *model.Fleet, observed []model.ObservedPrincipal) model.Plan {
 	}
 	for _, n := range f.Nodes {
 		for _, pr := range n.Principals {
+			if scopedPrincipalID != "" && pr.ID != scopedPrincipalID {
+				continue
+			}
 			o, observedOK := obs[pr.ID]
 			if !observedOK {
 				p.Warnings = append(p.Warnings, fmt.Sprintf("principal %s on %s was not observed; no changes planned", pr.ID, n.Name))
