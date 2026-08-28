@@ -67,6 +67,14 @@ func TestV1MigrationDeterministicAndPreservesHostTrust(t *testing.T) {
 		t.Fatal("repeated migration must produce stable IDs")
 	}
 
+	nodeID := first.Fleet.Nodes[0].ID
+	routeID := first.Fleet.Nodes[0].Principals[0].Routes[0].ID
+	nodeSuffix := strings.TrimPrefix(nodeID, "node_")
+	routeSuffix := strings.TrimPrefix(routeID, "route_")
+	if nodeSuffix == routeSuffix {
+		t.Fatalf("stable ID namespaces must be domain-separated: node=%s route=%s", nodeID, routeID)
+	}
+
 	trust := first.Fleet.Nodes[0].HostTrust
 	if trust.Method != "v1-pinned" || len(trust.Keys) != 1 {
 		t.Fatalf("expected migrated host trust, got %#v", trust)
