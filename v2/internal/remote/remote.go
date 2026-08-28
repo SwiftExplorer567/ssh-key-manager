@@ -158,6 +158,70 @@ func EnsureManagedKey() (string, string, string, error) {
 	return path, pubLine, fp, nil
 }
 
+func resolveSSHConfigRoute(r model.Route) (model.Route, error) {
+	alias := strings.TrimSpace(r.SSHConfigAlias)
+	if alias == "" {
+		return model.Route{}, errors.New("ssh-config route requires ssh_config_alias")
+	}
+	cmd := exec.Command("ssh", "-G", alias)
+	out, err := cmd.Output()
+	if err != nil {
+		return model.Route{}, fmt.Errorf("resolve ssh config alias %s: %w", alias, err)
+	}
+	host := ""
+	port := 0
+	configProxyJump := ""
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "hostname":
+			host = fields[1]
+		case "port":
+			if v, convErr := strconv.Atoi(fields[1]); convErr == nil {
+				port = v
+			}
+		case "proxyjump":
+			if fields[1] != "none" {
+				configProxyJump = fields[1]
+			}
+		}
+	}
+	if host == "" {
+		return model.Route{}, fmt.Errorf("ssh config alias %s resolved without a hostname", alias)
+	}
+	if r.Port == 0 {
+		if port == 0 {
+			port = 22
+		}
+		r.Port = port
+	}
+	if r.ProxyJump == "" {
+		r.ProxyJump = configProxyJump
+	}
+	r.Host = host
+	return r, nil
+}
+
+func normalizeRoute(r model.Route) (model.Route, error) {
+	switch r.Type {
+	case "direct", "tailscale":
+		if strings.TrimSpace(r.Host) == "" || r.Host == "local" {
+			return model.Route{}, errors.New("remote route requires a non-local host")
+		}
+		if r.Port == 0 {
+			r.Port = 22
+		}
+		return r, nil
+	case "ssh-config":
+		return resolveSSHConfigRoute(r)
+	default:
+		return model.Route{}, fmt.Errorf("unsupported route type %q", r.Type)
+	}
+}
+
 func resolveTarget(f *model.Fleet, nodeName, user string) (target, error) {
 	for ni := range f.Nodes {
 		n := f.Nodes[ni]
@@ -184,15 +248,19 @@ func resolveTarget(f *model.Fleet, nodeName, user string) (target, error) {
 		pr := n.Principals[pi]
 		routes := append([]model.Route(nil), pr.Routes...)
 		sort.SliceStable(routes, func(i, j int) bool { return routes[i].Priority < routes[j].Priority })
+		routeErrors := []string{}
 		for _, r := range routes {
-			if r.Type == "direct" && r.Host != "" && r.Host != "local" {
-				if r.Port == 0 {
-					r.Port = 22
-				}
-				return target{NodeIndex: ni, PrincipalIndex: pi, Node: n, Principal: pr, Route: r}, nil
+			normalized, err := normalizeRoute(r)
+			if err != nil {
+				routeErrors = append(routeErrors, fmt.Sprintf("%s: %v", r.ID, err))
+				continue
 			}
+			return target{NodeIndex: ni, PrincipalIndex: pi, Node: n, Principal: pr, Route: normalized}, nil
 		}
-		return target{}, fmt.Errorf("node %s/%s has no supported remote direct route", nodeName, pr.Username)
+		if len(routeErrors) == 0 {
+			return target{}, fmt.Errorf("node %s/%s has no remote routes", nodeName, pr.Username)
+		}
+		return target{}, fmt.Errorf("node %s/%s has no usable route: %s", nodeName, pr.Username, strings.Join(routeErrors, "; "))
 	}
 	return target{}, fmt.Errorf("node not found: %s", nodeName)
 }
@@ -273,10 +341,17 @@ func runSSH(t target, key string, batch bool, stdin []byte, remoteArgs ...string
 	if batch {
 		args = append(args, "-o", "BatchMode=yes")
 	}
+	if t.Route.ProxyJump != "" {
+		args = append(args, "-J", t.Route.ProxyJump)
+	}
 	if t.Route.Port != 22 {
 		args = append(args, "-p", strconv.Itoa(t.Route.Port))
 	}
-	args = append(args, t.Principal.Username+"@"+t.Route.Host)
+	destinationHost := t.Route.Host
+	if t.Route.Type == "ssh-config" && t.Route.SSHConfigAlias != "" {
+		destinationHost = t.Route.SSHConfigAlias
+	}
+	args = append(args, t.Principal.Username+"@"+destinationHost)
 	args = append(args, remoteArgs...)
 
 	cmd := exec.Command("ssh", args...)
@@ -287,7 +362,7 @@ func runSSH(t target, key string, batch bool, stdin []byte, remoteArgs ...string
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), stderr.String(), fmt.Errorf("ssh %s@%s: %w: %s", t.Principal.Username, t.Route.Host, err, strings.TrimSpace(stderr.String()))
+		return stdout.String(), stderr.String(), fmt.Errorf("ssh %s@%s via %s: %w: %s", t.Principal.Username, destinationHost, t.Route.Type, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), stderr.String(), nil
 }
